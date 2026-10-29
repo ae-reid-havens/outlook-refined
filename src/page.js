@@ -36,13 +36,16 @@
   // Accounts in the saved drag order first, then the ones that only have a label.
   // A value is the account's short label, or '' to keep Outlook's own name.
   const labels = Object.fromEntries((S.accountLabels || []).filter(a => a.account).map(a => [lower(a.account), a.label || '']));
-  const accounts = {};
-  for (const a of stored(ACCOUNT_ORDER_KEY, [])) accounts[lower(a)] = labels[lower(a)] || '';
-  for (const [a, label] of Object.entries(labels)) if (!(a in accounts)) accounts[a] = label;
+  function orderedAccounts(order) {
+    const accounts = {};
+    for (const a of order) accounts[lower(a)] = labels[lower(a)] || '';
+    for (const [a, label] of Object.entries(labels)) if (!(a in accounts)) accounts[a] = label;
+    return accounts;
+  }
   const cfg = {
     favorites: S.favoritesGroups ? stored(FAVORITES_KEY, DEFAULT_FAVORITES) : [],
     hide: (S.hiddenFolders || []).map(lower).filter(Boolean),
-    accounts,
+    accounts: orderedAccounts(stored(ACCOUNT_ORDER_KEY, [])),
     accountsHeading: S.accountsHeading || '',
     hideAccountTrees: !!S.hideAccountTrees,
     hideAddAccount: !!S.hideAddAccount,
@@ -54,16 +57,13 @@
     hideRibbonGroupLabels: !!S.hideRibbonGroupLabels,
     otherPanel: false,
   };
-  // The primary account's folders carry no "(address)" suffix. Outlook lists the
-  // primary account's tree first, so its root names it; the setting overrides.
-  let detectedPrimary = '';
+  // Folders with no "(address)" suffix belong to the primary account. Outlook lists
+  // the primary account's tree first, so its root names it; the setting overrides.
+  // Read each time, never cached: the tree can show placeholders while Outlook starts.
   function primary() {
     if (S.primaryAccount) return lower(S.primaryAccount);
-    if (!detectedPrimary) {
-      const root = document.querySelector('[role="treeitem"][aria-level="1"][id^="primaryMailboxRoot"]');
-      detectedPrimary = lower(root && root.getAttribute('data-folder-name'));
-    }
-    return detectedPrimary;
+    const root = document.querySelector(ACCT_ROOT);
+    return lower(root && root.getAttribute('data-folder-name'));
   }
   // With several accounts Outlook usually suffixes every account's folders, the
   // primary's too; the plain name is the fallback for the primary only.
@@ -123,7 +123,6 @@
   // matches (for example each account's Drafts), labeled by account. Computed on
   // every render, never saved, so Outlook renaming "Sent Items" to
   // "Sent Items (account)" when a second one is added needs no config change.
-  const accountKeys = Object.keys(cfg.accounts || {});
   function accountOf(name) {
     const m = /\(([^()]+@[^()]+)\)$/.exec(name);
     return (m ? m[1] : primary()).toLowerCase();
@@ -152,6 +151,7 @@
     if (!group.match) return [];
     const re = pattern(group.match);
     const hidden = new Set(cfg.hide);
+    const accountKeys = Object.keys(cfg.accounts || {}); // current, so a drag reorders these too
     return favoriteNames()
       .filter(name => re.test(name) && !hidden.has(name) && !findFolder(name))
       .map(name => {
@@ -476,7 +476,7 @@
   // Header above the first account tree. Inserted next to Outlook's nodes, never moving them.
   function ensureAccountsHeader() {
     if (!cfg.accountsHeading) return;
-    const root = document.querySelector('[role="treeitem"][aria-level="1"][id^="primaryMailboxRoot"]');
+    const root = document.querySelector(ACCT_ROOT);
     const wrapEl = root && root.parentElement;
     if (!wrapEl || !wrapEl.parentElement) return;
     let h = wrapEl.parentElement.querySelector(':scope > .olkt-accounts');
@@ -1152,11 +1152,33 @@
     if (!ev.shiftKey) return;
     const item = ev.target.closest('[role="treeitem"]');
     const folder = item && item.getAttribute('data-folder-name');
-    const node = folder && findFolder(folder);
+    let node = folder && findFolder(folder);
+    if (!node && folder && cfg.favorites.length && !matchesAnyGroup(folder) && placeUnplaced()) node = findFolder(folder);
     if (!node) return;
     ev.preventDefault();
     ev.stopPropagation();
     folderMenu(node, item, ev.clientX, ev.clientY);
+  }
+
+  // Favorites that are in no group yet (all of them, on a new install) show at the
+  // top in Outlook's order. The first time one is edited, all of them join the tree
+  // there, in that order, so the list looks the same and each can then be moved.
+  function placeUnplaced() {
+    const hidden = new Set(cfg.hide);
+    const names = favoriteNames().filter(n => !hidden.has(n) && !findFolder(n) && !matchesAnyGroup(n));
+    if (!names.length) return false;
+    cfg.favorites.unshift(...names.map(folder => ({ folder })));
+    save();
+    return true;
+  }
+
+  // Another Outlook window saved its edits: take them, so this window's next save
+  // cannot write back an older tree.
+  function onStorage(ev) {
+    if (ev.key === FAVORITES_KEY && S.favoritesGroups) cfg.favorites = stored(FAVORITES_KEY, DEFAULT_FAVORITES);
+    else if (ev.key === ACCOUNT_ORDER_KEY) cfg.accounts = orderedAccounts(stored(ACCOUNT_ORDER_KEY, []));
+    else return;
+    if (current()) render();
   }
 
   // ==== calendar module ====
@@ -1994,6 +2016,7 @@
     document.addEventListener('pointerdown', onWellPress, true);
     document.addEventListener('keydown', onDocKey, true);
     document.addEventListener('keydown', onWellKey, true);
+    window.addEventListener('storage', onStorage);
     try { if (window.olktReady) window.olktReady(''); } catch {}
   }
 
@@ -2005,6 +2028,7 @@
       document.removeEventListener('pointerdown', onWellPress, true);
       document.removeEventListener('keydown', onDocKey, true);
       document.removeEventListener('keydown', onWellKey, true);
+      window.removeEventListener('storage', onStorage);
       if (boundList) unbindList(boundList);
       if (acctListBound) acctListBound.removeEventListener('pointerdown', onAcctPress, true);
       clearInterval(agendaTimer);

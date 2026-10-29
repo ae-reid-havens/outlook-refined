@@ -71,7 +71,7 @@ readable body width. **Ribbon:** the group-name row under the buttons goes.
   $description: Drag the pane's right edge; double-click it to reset
 - paneWidth: 0
   $name: Folder pane width (px)
-  $description: 0 keeps Outlook's own width
+  $description: 0 keeps Outlook's own width. A width set by dragging the pane's edge wins; double-click the edge to return to this one
 - calendarRowPerAccount: true
   $name: Calendar, one row per account
 - calendarPaneWidth: 180
@@ -165,13 +165,16 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // Accounts in the saved drag order first, then the ones that only have a label.
   // A value is the account's short label, or '' to keep Outlook's own name.
   const labels = Object.fromEntries((S.accountLabels || []).filter(a => a.account).map(a => [lower(a.account), a.label || '']));
-  const accounts = {};
-  for (const a of stored(ACCOUNT_ORDER_KEY, [])) accounts[lower(a)] = labels[lower(a)] || '';
-  for (const [a, label] of Object.entries(labels)) if (!(a in accounts)) accounts[a] = label;
+  function orderedAccounts(order) {
+    const accounts = {};
+    for (const a of order) accounts[lower(a)] = labels[lower(a)] || '';
+    for (const [a, label] of Object.entries(labels)) if (!(a in accounts)) accounts[a] = label;
+    return accounts;
+  }
   const cfg = {
     favorites: S.favoritesGroups ? stored(FAVORITES_KEY, DEFAULT_FAVORITES) : [],
     hide: (S.hiddenFolders || []).map(lower).filter(Boolean),
-    accounts,
+    accounts: orderedAccounts(stored(ACCOUNT_ORDER_KEY, [])),
     accountsHeading: S.accountsHeading || '',
     hideAccountTrees: !!S.hideAccountTrees,
     hideAddAccount: !!S.hideAddAccount,
@@ -183,16 +186,13 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     hideRibbonGroupLabels: !!S.hideRibbonGroupLabels,
     otherPanel: false,
   };
-  // The primary account's folders carry no "(address)" suffix. Outlook lists the
-  // primary account's tree first, so its root names it; the setting overrides.
-  let detectedPrimary = '';
+  // Folders with no "(address)" suffix belong to the primary account. Outlook lists
+  // the primary account's tree first, so its root names it; the setting overrides.
+  // Read each time, never cached: the tree can show placeholders while Outlook starts.
   function primary() {
     if (S.primaryAccount) return lower(S.primaryAccount);
-    if (!detectedPrimary) {
-      const root = document.querySelector('[role="treeitem"][aria-level="1"][id^="primaryMailboxRoot"]');
-      detectedPrimary = lower(root && root.getAttribute('data-folder-name'));
-    }
-    return detectedPrimary;
+    const root = document.querySelector(ACCT_ROOT);
+    return lower(root && root.getAttribute('data-folder-name'));
   }
   // With several accounts Outlook usually suffixes every account's folders, the
   // primary's too; the plain name is the fallback for the primary only.
@@ -252,7 +252,6 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // matches (for example each account's Drafts), labeled by account. Computed on
   // every render, never saved, so Outlook renaming "Sent Items" to
   // "Sent Items (account)" when a second one is added needs no config change.
-  const accountKeys = Object.keys(cfg.accounts || {});
   function accountOf(name) {
     const m = /\(([^()]+@[^()]+)\)$/.exec(name);
     return (m ? m[1] : primary()).toLowerCase();
@@ -281,6 +280,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     if (!group.match) return [];
     const re = pattern(group.match);
     const hidden = new Set(cfg.hide);
+    const accountKeys = Object.keys(cfg.accounts || {}); // current, so a drag reorders these too
     return favoriteNames()
       .filter(name => re.test(name) && !hidden.has(name) && !findFolder(name))
       .map(name => {
@@ -605,7 +605,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // Header above the first account tree. Inserted next to Outlook's nodes, never moving them.
   function ensureAccountsHeader() {
     if (!cfg.accountsHeading) return;
-    const root = document.querySelector('[role="treeitem"][aria-level="1"][id^="primaryMailboxRoot"]');
+    const root = document.querySelector(ACCT_ROOT);
     const wrapEl = root && root.parentElement;
     if (!wrapEl || !wrapEl.parentElement) return;
     let h = wrapEl.parentElement.querySelector(':scope > .olkt-accounts');
@@ -1281,11 +1281,33 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     if (!ev.shiftKey) return;
     const item = ev.target.closest('[role="treeitem"]');
     const folder = item && item.getAttribute('data-folder-name');
-    const node = folder && findFolder(folder);
+    let node = folder && findFolder(folder);
+    if (!node && folder && cfg.favorites.length && !matchesAnyGroup(folder) && placeUnplaced()) node = findFolder(folder);
     if (!node) return;
     ev.preventDefault();
     ev.stopPropagation();
     folderMenu(node, item, ev.clientX, ev.clientY);
+  }
+
+  // Favorites that are in no group yet (all of them, on a new install) show at the
+  // top in Outlook's order. The first time one is edited, all of them join the tree
+  // there, in that order, so the list looks the same and each can then be moved.
+  function placeUnplaced() {
+    const hidden = new Set(cfg.hide);
+    const names = favoriteNames().filter(n => !hidden.has(n) && !findFolder(n) && !matchesAnyGroup(n));
+    if (!names.length) return false;
+    cfg.favorites.unshift(...names.map(folder => ({ folder })));
+    save();
+    return true;
+  }
+
+  // Another Outlook window saved its edits: take them, so this window's next save
+  // cannot write back an older tree.
+  function onStorage(ev) {
+    if (ev.key === FAVORITES_KEY && S.favoritesGroups) cfg.favorites = stored(FAVORITES_KEY, DEFAULT_FAVORITES);
+    else if (ev.key === ACCOUNT_ORDER_KEY) cfg.accounts = orderedAccounts(stored(ACCOUNT_ORDER_KEY, []));
+    else return;
+    if (current()) render();
   }
 
   // ==== calendar module ====
@@ -2123,6 +2145,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     document.addEventListener('pointerdown', onWellPress, true);
     document.addEventListener('keydown', onDocKey, true);
     document.addEventListener('keydown', onWellKey, true);
+    window.addEventListener('storage', onStorage);
     try { if (window.olktReady) window.olktReady(''); } catch {}
   }
 
@@ -2134,6 +2157,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       document.removeEventListener('pointerdown', onWellPress, true);
       document.removeEventListener('keydown', onDocKey, true);
       document.removeEventListener('keydown', onWellKey, true);
+      window.removeEventListener('storage', onStorage);
       if (boundList) unbindList(boundList);
       if (acctListBound) acctListBound.removeEventListener('pointerdown', onAcctPress, true);
       clearInterval(agendaTimer);
@@ -2265,11 +2289,34 @@ void* Slot(IUnknown* obj, int index) {
     return (*reinterpret_cast<void***>(obj))[index];
 }
 
-// Completion handler for AddScriptToExecuteOnDocumentCreated; only logs a failure.
+// COM objects of ours that WebView2 still holds. Their code lives in this DLL, so
+// Wh_ModUninit waits for them: a call into an unloaded mod would crash Outlook.
+std::atomic<int> g_liveObjects{0};
+
+using Invoke_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, HRESULT, IUnknown*);
+HRESULT Forward(IUnknown* handler, HRESULT hr, IUnknown* result) {
+    return reinterpret_cast<Invoke_t>(Slot(handler, kHandler_Invoke))(handler, hr, result);
+}
+
+// Completion handler for AddScriptToExecuteOnDocumentCreated. Holds back Outlook's
+// controller handler until the script is registered, because Outlook navigates from
+// that handler and the window's first document must already get the script.
 class ScriptAdded final : public IUnknown {
     std::atomic<ULONG> refs_{1};
+    std::atomic<bool> forwarded_{false};
+    IUnknown* outlook_;
+    IUnknown* controller_;
 
    public:
+    ScriptAdded(IUnknown* outlook, IUnknown* controller) : outlook_(outlook), controller_(controller) {
+        outlook_->AddRef();
+        controller_->AddRef();
+        ++g_liveObjects;
+    }
+    // Hands Outlook its controller, once only.
+    void ForwardOnce() {
+        if (!forwarded_.exchange(true)) Forward(outlook_, S_OK, controller_);
+    }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         if (IsEqualGUID(iid, kIID_IUnknown) || IsEqualGUID(iid, kIID_ScriptAdded)) {
             *out = this;
@@ -2282,26 +2329,36 @@ class ScriptAdded final : public IUnknown {
     ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
     ULONG STDMETHODCALLTYPE Release() override {
         ULONG n = --refs_;
-        if (!n) delete this;
+        if (!n) {
+            ForwardOnce();  // dropped without a completion: Outlook still gets its window
+            outlook_->Release();
+            controller_->Release();
+            delete this;
+            --g_liveObjects;
+        }
         return n;
     }
     virtual HRESULT STDMETHODCALLTYPE Invoke(HRESULT hr, LPCWSTR id) {
         if (FAILED(hr)) Wh_Log(L"Page script not added: hr=0x%08X", hr);
+        ForwardOnce();
         return S_OK;
     }
 };
 
-// Stands in for Outlook's completion handler: runs `before` on the result, then
-// passes the same result on to Outlook's handler.
+// Stands in for Outlook's completion handler. `handle` gets the result and Outlook's
+// handler, and is responsible for passing the result on to it.
+using Handle_t = HRESULT (*)(HRESULT hr, IUnknown* result, IUnknown* outlook);
+
 class WrappedHandler final : public IUnknown {
     std::atomic<ULONG> refs_{1};
     GUID iid_;
     IUnknown* inner_;
-    void (*before_)(IUnknown*);
+    Handle_t handle_;
 
    public:
-    WrappedHandler(REFIID iid, IUnknown* inner, void (*before)(IUnknown*)) : iid_(iid), inner_(inner), before_(before) {
+    WrappedHandler(REFIID iid, IUnknown* inner, Handle_t handle) : iid_(iid), inner_(inner), handle_(handle) {
         inner_->AddRef();
+        ++g_liveObjects;
     }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         if (IsEqualGUID(iid, kIID_IUnknown) || IsEqualGUID(iid, iid_)) {
@@ -2318,27 +2375,25 @@ class WrappedHandler final : public IUnknown {
         if (!n) {
             inner_->Release();
             delete this;
+            --g_liveObjects;
         }
         return n;
     }
-    virtual HRESULT STDMETHODCALLTYPE Invoke(HRESULT hr, IUnknown* result) {
-        if (SUCCEEDED(hr) && result) before_(result);
-        using Invoke_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, HRESULT, IUnknown*);
-        return reinterpret_cast<Invoke_t>(Slot(inner_, kHandler_Invoke))(inner_, hr, result);
-    }
+    virtual HRESULT STDMETHODCALLTYPE Invoke(HRESULT hr, IUnknown* result) { return handle_(hr, result, inner_); }
 };
 
 // Set while one of our controller hooks runs, so an implementation that calls
 // another hooked method internally is wrapped only once.
 thread_local int g_inCreate = 0;
 
-// Runs before Outlook's own handler sees the controller, and Outlook navigates only
-// after that, so the script is in place before the window's first document.
-void OnController(IUnknown* result) {
+// Adds the page script to each new WebView, then hands Outlook its controller once
+// the script is registered (ScriptAdded). Any failure hands it over at once.
+HRESULT OnController(HRESULT result_hr, IUnknown* result, IUnknown* outlook) {
+    if (FAILED(result_hr) || !result) return Forward(outlook, result_hr, result);
     IUnknown* controller = nullptr;
     if (FAILED(result->QueryInterface(kIID_Controller, (void**)&controller))) {
         Wh_Log(L"Controller interface missing");
-        return;
+        return Forward(outlook, result_hr, result);
     }
     IUnknown* webview = nullptr;
     using Get_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, IUnknown**);
@@ -2346,17 +2401,19 @@ void OnController(IUnknown* result) {
     controller->Release();
     if (FAILED(hr) || !webview) {
         Wh_Log(L"get_CoreWebView2 failed: 0x%08X", hr);
-        return;
+        return Forward(outlook, result_hr, result);
     }
     AcquireSRWLockShared(&g_scriptLock);
     std::wstring script = g_script;
     ReleaseSRWLockShared(&g_scriptLock);
-    auto* done = new ScriptAdded();
+    auto* done = new ScriptAdded(outlook, result);
     using Add_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, LPCWSTR, IUnknown*);
     hr = reinterpret_cast<Add_t>(Slot(webview, kWebView_AddScriptOnDocumentCreated))(webview, script.c_str(), done);
-    done->Release();
     webview->Release();
     Wh_Log(L"New WebView: AddScriptToExecuteOnDocumentCreated hr=0x%08X", hr);
+    if (FAILED(hr)) done->ForwardOnce();  // no completion will come
+    done->Release();
+    return S_OK;
 }
 
 using CreateController_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, HWND, IUnknown*);
@@ -2404,7 +2461,7 @@ std::atomic<bool> g_envMethodsHooked{false};
 
 // The environment's methods live in the WebView2 runtime and are shared by every
 // environment, so hooking them once covers every window Outlook opens.
-void OnEnvironment(IUnknown* env) {
+void HookEnvironment(IUnknown* env) {
     if (g_envMethodsHooked.exchange(true)) return;
     Wh_SetFunctionHook(Slot(env, kEnv_CreateController), (void*)CreateController_Hook, (void**)&CreateController_Original);
     IUnknown* env3 = nullptr;
@@ -2423,6 +2480,11 @@ void OnEnvironment(IUnknown* env) {
     }
     Wh_ApplyHookOperations();
     Wh_Log(L"Environment methods hooked");
+}
+
+HRESULT OnEnvironment(HRESULT hr, IUnknown* env, IUnknown* outlook) {
+    if (SUCCEEDED(hr) && env) HookEnvironment(env);
+    return Forward(outlook, hr, env);
 }
 
 using CreateEnv_t = HRESULT(WINAPI*)(PCWSTR, PCWSTR, IUnknown*, IUnknown*);
@@ -2474,4 +2536,11 @@ BOOL Wh_ModInit() {
 
 void Wh_ModSettingsChanged() {
     BuildScript();
+}
+
+// Runs after Windhawk has removed the hooks, so no new handlers appear. Waits up to
+// 5 seconds for WebView2 to release the ones it still holds before the DLL unloads.
+void Wh_ModUninit() {
+    for (int i = 0; i < 100 && g_liveObjects > 0; ++i) Sleep(50);
+    if (g_liveObjects > 0) Wh_Log(L"Unloading while WebView2 still holds %d handlers", g_liveObjects.load());
 }

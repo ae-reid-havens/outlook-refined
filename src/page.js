@@ -211,8 +211,10 @@
     out.push(`${ACCT_LIST}.olkt-dragging [role="treeitem"][aria-level="1"]{cursor:grabbing}`);
     out.push(`.olkt-head.olkt-accounts{margin-top:10px;padding-left:12px;border-top:1px solid var(--colorNeutralStroke2,#3a3a3a);border-radius:0;height:32px}`);
 
-    // Favorites: our compose bar first, then the tree in order, then anything not yet placed.
-    out.push(`${FAVS} > div{order:9000}`);
+    // Favorites: our compose bar first, then anything not yet placed (in Outlook's
+    // order, at top level, so a new install keeps every existing favorite in view),
+    // then the tree in order.
+    out.push(`${FAVS} > div{order:0}`);
     out.push(`${FAVS} > .olkt-compose{order:-1}`);
     for (const f of cfg.hide) out.push(`${favWrap(f)}{display:none!important}`);
     let n = 0;
@@ -467,7 +469,8 @@
     const head = el && el.closest('.olkt-head');
     const item = el && el.closest('[role="treeitem"]');
     const target = head ? findGroup(head.dataset.group) : item ? findFolder(item.getAttribute('data-folder-name')) : null;
-    lastDrop = target ? { target, at: Date.now() } : null;
+    // The names before the release: only a favorite that appears after it was dropped.
+    lastDrop = target ? { target, at: Date.now(), before: new Set(favoriteNames()) } : null;
   }
 
   // Header above the first account tree. Inserted next to Outlook's nodes, never moving them.
@@ -560,10 +563,12 @@
   // the folder it was released on, or first inside the group header it was
   // released on. Only right after a real drop: while Outlook boots, its list
   // briefly shows placeholder folder names that must not be adopted. A favorite
-  // added another way shows at the bottom until moved (Shift+right-click).
+  // added another way, or there before the drop, stays at the top until moved
+  // (Shift+right-click).
   function adoptNewFavorites(list) {
     const drop = lastDrop && Date.now() - lastDrop.at < 15000 ? lastDrop.target : null;
     if (!drop || !cfg.favorites.length) return false;
+    const before = lastDrop.before;
     const hidden = new Set(cfg.hide);
     let prev = null;
     let changed = false;
@@ -573,7 +578,7 @@
       const folder = item.getAttribute('data-folder-name');
       if (!folder || hidden.has(folder) || matchesAnyGroup(folder)) continue;
       let node = findFolder(folder);
-      if (!node) {
+      if (!node && !before.has(folder)) {
         node = { folder };
         if (isGroup(drop)) {
           drop.items.unshift(node);

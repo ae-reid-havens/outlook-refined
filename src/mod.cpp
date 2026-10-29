@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              outlook-refined
 // @name            Outlook Refined
-// @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, a tidier calendar and reading pane
-// @version         0.1
+// @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane
+// @version         0.2
 // @author          Analytic Endeavors (Reid Havens)
 // @github          https://github.com/ae-reid-havens
 // @include         olk.exe
@@ -14,7 +14,10 @@
 
 Restyles the new Outlook for Windows (olk.exe) from inside its own page. The mod
 adds one script to each Outlook window when the window is created. It reads
-nothing from disk, opens no ports and makes no network calls.
+nothing from disk and opens no ports. The agenda, month grid and Other inbox
+card ask Outlook's own mail service for your calendar and inbox, from inside
+its page and with the session Outlook is already signed in to; nothing is
+stored, logged or sent anywhere else.
 
 Restart Outlook after enabling the mod or changing a setting.
 
@@ -23,6 +26,11 @@ its menu, Shift+right-click a favorite to rename or move it), per-account
 compose buttons, a resizable pane, account trees under one foldable heading,
 accounts reordered by dragging. Edits made inside Outlook are kept per PC in
 Outlook's own storage.
+
+**Agenda:** today and the next days from every account's calendar at the
+bottom of the folder pane, with Outlook's event icons and a join button for
+online meetings, under a month grid shaded by booked hours. **Other inbox:**
+optionally, the newest Other conversations below the Focused list.
 
 **Calendar:** one row per account, compact time zones, start and end times on
 event tiles, overlapping events cascaded or merged.
@@ -72,6 +80,18 @@ readable body width. **Ribbon:** the group-name row under the buttons goes.
 - paneWidth: 0
   $name: Folder pane width (px)
   $description: 0 keeps Outlook's own width. A width set by dragging the pane's edge wins; double-click the edge to return to this one
+- agenda: true
+  $name: Agenda under the folder pane
+  $description: Today and the next days from every account's calendar, with a join button for online meetings. Read through the session Outlook is signed in to; nothing is stored or sent anywhere else
+- agendaDays: 3
+  $name: Agenda days
+  $description: Days the agenda lists, today included (1 to 14)
+- monthHeatMap: true
+  $name: Month grid above the agenda
+  $description: Each day shaded by its booked hours; the arrows browse other months
+- otherCard: false
+  $name: Other inbox under Focused
+  $description: While an inbox shows its Focused tab, its newest Other conversations sit below the list. A button by the tabs switches back to Outlook's own tabs
 - calendarRowPerAccount: true
   $name: Calendar, one row per account
 - calendarPaneWidth: 180
@@ -218,6 +238,10 @@ void BuildScript() {
     AddBool(json, L"hideAddAccount");
     AddBool(json, L"resizablePane");
     AddInt(json, L"paneWidth");
+    AddBool(json, L"agenda");
+    AddInt(json, L"agendaDays");
+    AddBool(json, L"monthHeatMap");
+    AddBool(json, L"otherCard");
     AddBool(json, L"calendarRowPerAccount");
     AddInt(json, L"calendarPaneWidth");
     AddBool(json, L"compactTimeZones");

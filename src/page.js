@@ -7,6 +7,54 @@
 (() => {
   // Outlook has hidden subframes with folder trees of their own; only the main window is ours.
   if (window.top !== window) return 'skipped subframe';
+  // ==== Outlook's own session ====
+  // Outlook signs each call to its mail service with a per-account Authorization header.
+  // fetch and XMLHttpRequest are wrapped once per page to keep the newest such headers
+  // per mailbox, so the agenda, month grid and Other card can ask that same service with
+  // the session Outlook is already signed in to. Nothing is stored or logged, and
+  // window.__olkt exposes none of it. Removing the mod leaves the wrappers idle.
+  const session = window.__olktSession || (window.__olktSession = (() => {
+    const byAnchor = new Map(); // x-anchormailbox -> { headers, at }
+    const KEEP = ['authorization', 'x-owa-sessionid', 'x-client-version', 'x-tenantid', 'prefer', 'x-owa-hosted-ux', 'x-req-source'];
+    const listeners = new Set();
+    const entries = src => {
+      try {
+        if (!src) return [];
+        if (typeof src.entries === 'function' && !Array.isArray(src)) return [...src.entries()];
+        return Array.isArray(src) ? src : Object.entries(src);
+      } catch { return []; }
+    };
+    const note = (url, headers) => {
+      if (typeof url !== 'string' || !url.includes('/owa/service.svc?action=')) return;
+      const h = {};
+      for (const [k, v] of headers) h[String(k).toLowerCase()] = String(v);
+      const anchor = h['x-anchormailbox'];
+      if (!anchor || !/^Bearer /.test(h.authorization || '') || h['x-owa-actionsource'] === 'OutlookRefined') return;
+      const kept = {};
+      for (const k of KEEP) if (h[k]) kept[k] = h[k];
+      const fresh = !byAnchor.has(anchor);
+      byAnchor.set(anchor, { headers: kept, at: Date.now() });
+      if (fresh) for (const fn of listeners) { try { fn(anchor); } catch {} }
+    };
+    const nativeFetch = window.fetch;
+    window.fetch = function (input, init) {
+      try {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input && input.url;
+        note(url, entries((init && init.headers) || (input && input.headers)));
+      } catch {}
+      return nativeFetch.apply(this, arguments);
+    };
+    const X = XMLHttpRequest.prototype, open = X.open, setHeader = X.setRequestHeader, send = X.send;
+    X.open = function (method, url) { this.__olktUrl = String(url); this.__olktHeaders = []; return open.apply(this, arguments); };
+    X.setRequestHeader = function (k, v) { if (this.__olktHeaders) this.__olktHeaders.push([k, v]); return setHeader.apply(this, arguments); };
+    X.send = function () { try { note(this.__olktUrl, this.__olktHeaders || []); } catch {} return send.apply(this, arguments); };
+    return {
+      headers: anchor => { const e = byAnchor.get(anchor); return e ? { ...e.headers } : null; },
+      anchors: () => [...byAnchor.keys()],
+      on: fn => listeners.add(fn),
+      off: fn => listeners.delete(fn),
+    };
+  })());
   // Each install replaces the previous one. Older copies (for example from an
   // injector that was restarted) see a newer generation and shut themselves down.
   if (window.__olkt) window.__olkt.remove();
@@ -55,7 +103,10 @@
     calendarOverlap: S.overlapLayout !== 'none',
     readingWidth: S.readingWidth || '',
     hideRibbonGroupLabels: !!S.hideRibbonGroupLabels,
-    otherPanel: false,
+    agenda: S.agenda !== false,
+    agendaDays: Math.max(1, Math.min(14, Number(S.agendaDays) || 3)),
+    monthHeatMap: S.monthHeatMap !== false,
+    otherCard: !!S.otherCard,
   };
   // Folders with no "(address)" suffix belong to the primary account. Outlook lists
   // the primary account's tree first, so its root names it; the setting overrides.
@@ -635,8 +686,228 @@
     pane.appendChild(handle);
   }
 
+  // ==== calendar and Other inbox through Outlook's own service ====
+  // The same JSON calls Outlook's page makes to its mail service, sent with the headers
+  // kept above. Property names are EWS field URIs; one unknown name fails a whole call.
+  const OWA_URL = 'https://outlook.office.com/owa/service.svc?action=';
+  const OWA_HEADER = { __type: 'JsonRequestHeaders:#Exchange', RequestServerVersion: 'V2018_01_08', TimeZoneContext: { __type: 'TimeZoneContext:#Exchange', TimeZoneDefinition: { __type: 'TimeZoneDefinitionType:#Exchange', Id: 'UTC' } } };
+  const PROP = f => ({ __type: 'PropertyUri:#Exchange', FieldURI: f });
+  let owaCount = 0;
+  async function owa(acct, action, body) {
+    const kept = session.headers(acct.anchor);
+    if (!kept) throw new Error('waiting for Outlook');
+    const headers = { ...kept, action, 'x-anchormailbox': acct.anchor, 'content-type': 'application/json; charset=utf-8', 'x-owa-actionsource': 'OutlookRefined' };
+    const res = await fetch(OWA_URL + action + '&app=Mail&n=' + (++owaCount), { method: 'POST', headers, body: JSON.stringify({ __type: action + 'JsonRequest:#Exchange', Header: OWA_HEADER, Body: body }) });
+    if (!res.ok) throw new Error(action + ' failed (' + res.status + ')');
+    const json = await res.json();
+    const out = json && json.Body;
+    if (!out) throw new Error(action + ': empty reply');
+    const msg = out.ResponseMessages && out.ResponseMessages.Items ? out.ResponseMessages.Items[0] : out;
+    if (msg && msg.ResponseClass && msg.ResponseClass !== 'Success') throw new Error(action + ': ' + (msg.MessageText || msg.ResponseCode || msg.ResponseClass));
+    return out;
+  }
+
+  // Outlook's accounts: address, the mailbox id its requests are routed by, our label and
+  // the compose button's color. Primary first, then the saved account order.
+  function accountMap() {
+    const seen = new Set(), out = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith('olk-Microsoft.AccountStorage.Coprincipal.Item.')) continue;
+      try {
+        const a = JSON.parse(localStorage.getItem(k));
+        const address = a && a.emailAddress && a.routingHint ? lower(a.emailAddress) : '';
+        if (address && !seen.has(address)) { seen.add(address); out.push({ address, anchor: String(a.routingHint) }); }
+      } catch {}
+    }
+    const order = Object.keys(cfg.accounts), p = primary();
+    const rank = a => a.address === p ? -1 : order.indexOf(a.address) < 0 ? order.length : order.indexOf(a.address);
+    out.sort((a, b) => rank(a) - rank(b) || a.address.localeCompare(b.address));
+    for (const a of out) {
+      a.label = labels[a.address] || a.address.split('@')[0];
+      a.color = (cfg.compose.find(c => c.account === a.address) || {}).color;
+    }
+    return out;
+  }
+
+  // Join links: the server's own field when set, else the first meeting link in the
+  // location or preview, else (agenda days only) in the invite's text, read in one batch.
+  const MEETING_URL = /https:\/\/[^\s"'<>]*?(teams\.microsoft\.com\/l\/meetup-join|teams\.live\.com\/meet|zoom\.us\/[jw]\/|meet\.google\.com\/|webex\.com\/)[^\s"'<>]*/i;
+  function joinIn(...texts) {
+    for (const t of texts) {
+      const m = MEETING_URL.exec(t || '');
+      if (m) return { url: m[0], kind: /zoom\.us/i.test(m[0]) ? 'Zoom' : /google/i.test(m[0]) ? 'Meet' : /webex/i.test(m[0]) ? 'Webex' : 'Teams' };
+    }
+    return undefined;
+  }
+  const CAL_PROPS = ['calendar:IsAllDayEvent', 'calendar:IsCancelled', 'calendar:IsSeriesCancelled', 'calendar:Location', 'calendar:IsOnlineMeeting', 'calendar:JoinOnlineMeetingUrl', 'calendar:StartWallClock', 'calendar:EndWallClock', 'item:Categories', 'item:Preview', 'calendar:Charm'].map(PROP);
+  const dateOnly = s => String(s).slice(0, 10) + 'T00:00:00Z'; // all-day events: the item's own date
+  const instant = s => new Date(s).toISOString();
+  // One account's events between from and to (occurrences expanded), as the agenda draws them.
+  async function readAccount(acct, from, to, joinsUntil) {
+    const found = await owa(acct, 'FindItem', { ItemShape: { __type: 'ItemResponseShape:#Exchange', BaseShape: 'Default', AdditionalProperties: CAL_PROPS }, ParentFolderIds: [{ __type: 'DistinguishedFolderId:#Exchange', Id: 'calendar' }], Traversal: 'Shallow', Paging: { __type: 'CalendarPageView:#Exchange', StartDate: from.toISOString(), EndDate: to.toISOString() } });
+    const msg = found.ResponseMessages && found.ResponseMessages.Items && found.ResponseMessages.Items[0];
+    const root = msg && msg.RootFolder;
+    const events = [], bodies = [];
+    const now = new Date();
+    for (const i of (root && root.Items) || []) {
+      if (i.IsCancelled || i.IsSeriesCancelled || i.ResponseType === 'Decline') continue;
+      const allDay = !!i.IsAllDayEvent;
+      const place = (i.Location && i.Location.DisplayName) || '';
+      const e = {
+        id: i.ItemId && i.ItemId.Id,
+        subject: i.Subject || '(no title)',
+        start: allDay ? dateOnly(i.StartWallClock || i.Start) : instant(i.Start),
+        end: allDay ? dateOnly(i.EndWallClock || i.End) : instant(i.End),
+        allDay, free: i.FreeBusyType === 'Free', account: acct.address, label: acct.label, color: acct.color,
+        categories: i.Categories && i.Categories.length ? i.Categories : undefined,
+        where: MEETING_URL.test(place) || /^microsoft teams meeting$/i.test(place) ? '' : place,
+        charm: i.Charm && i.Charm !== 'None' ? String(i.Charm).toLowerCase() : undefined,
+        join: joinIn(i.JoinOnlineMeetingUrl, place, i.Preview),
+      };
+      if (!e.join && joinsUntil && e.id && !allDay && (i.IsOnlineMeeting || /teams|zoom|webex|meet\b/i.test(place))
+        && new Date(e.start) < joinsUntil && new Date(e.end) > now) bodies.push(e);
+      events.push(e);
+    }
+    if (bodies.length) {
+      // The invite text holds the link when the field above is empty (most Teams invites).
+      // A failure here only loses join buttons, never the events.
+      try {
+        const got = await owa(acct, 'GetItem', { ItemIds: bodies.slice(0, 20).map(e => ({ __type: 'ItemId:#Exchange', Id: e.id })), ItemShape: { __type: 'ItemResponseShape:#Exchange', BaseShape: 'IdOnly', BodyType: 'Text', AdditionalProperties: [PROP('item:Body')] } });
+        ((got.ResponseMessages && got.ResponseMessages.Items) || []).forEach((m, k) => {
+          const item = m.Items && m.Items[0];
+          if (item && bodies[k]) bodies[k].join = joinIn(item.Body && item.Body.Value);
+        });
+      } catch {}
+    }
+    return events;
+  }
+
+  // Every account's events between from and to: declined and cancelled ones dropped, the
+  // same meeting on two calendars kept once. An account Outlook has not signed a call for
+  // yet is reported as waiting; a failed read is reported and marks the result stale.
+  async function readEvents(from, to, joinsUntil) {
+    const accounts = accountMap();
+    const events = [], errors = [], failed = [];
+    let asked = 0, broke = false;
+    await Promise.all(accounts.map(async acct => {
+      if (!session.headers(acct.anchor)) { failed.push(acct.address); errors.push(acct.label + ': waiting for Outlook'); return; }
+      asked++;
+      try { events.push(...await readAccount(acct, from, to, joinsUntil)); }
+      catch (err) { failed.push(acct.address); errors.push(acct.label + ': ' + err.message); broke = true; }
+    }));
+    const order = accounts.map(a => a.address);
+    events.sort((a, b) => a.start.localeCompare(b.start) || order.indexOf(a.account) - order.indexOf(b.account));
+    const byKey = new Map();
+    for (const e of events) {
+      const k = e.subject + '|' + e.start, kept = byKey.get(k);
+      if (!kept) { byKey.set(k, e); continue; }
+      // The same meeting on two calendars: the first copy stays, and takes what it lacks.
+      for (const f of ['join', 'charm', 'where', 'categories']) if (!kept[f] && e[f]) kept[f] = e[f];
+    }
+    return { events: [...byKey.values()], errors, failed, asked, broke };
+  }
+
+  // Busy minutes per local day (timed events not marked free), clipped to each day.
+  function heatFor(events, from, to) {
+    const heat = {};
+    for (const e of events) {
+      if (e.allDay || e.free) continue;
+      let s = new Date(e.start);
+      const end = new Date(e.end);
+      while (s < end) {
+        const dayEnd = new Date(s.getFullYear(), s.getMonth(), s.getDate() + 1);
+        const stop = end < dayEnd ? end : dayEnd;
+        if (s >= from && s < to) heat[ymd(s)] = (heat[ymd(s)] || 0) + Math.round((stop - s) / 60000);
+        s = stop;
+      }
+    }
+    return heat;
+  }
+
+  const AGENDA_REFRESH = 300000;
+  // The upcoming feed (today plus the next days) and this month's heat, in one read. An
+  // account that fails keeps its events from the previous agenda, and the result is stale.
+  async function fetchAgenda(prev) {
+    const now = new Date();
+    const days = cfg.agendaDays;
+    const end = new Date(now); end.setDate(end.getDate() + days); end.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const { events, errors, failed, asked, broke } = await readEvents(monthStart, monthEnd > end ? monthEnd : end, end);
+    if (!asked) throw new Error('waiting for Outlook');
+    const today = ymd(now);
+    const live = e => new Date(e.start) < end && (e.allDay ? e.end.slice(0, 10) > today : new Date(e.end) >= now);
+    const feed = events.filter(live);
+    const heat = heatFor(events, monthStart, monthEnd);
+    const fetched = now.toISOString();
+    if (!broke) return { fetched, days, events: feed, heat, errors, stale: false, lastGood: fetched };
+    const key = e => e.subject + '|' + e.start;
+    const have = new Set(feed.map(key));
+    const kept = prev ? prev.events.filter(e => failed.includes(e.account) && live(e) && !have.has(key(e))) : [];
+    const order = accountMap().map(a => a.address);
+    const merged = feed.concat(kept).sort((a, b) => a.start.localeCompare(b.start) || order.indexOf(a.account) - order.indexOf(b.account));
+    if (prev && prev.heat) for (const [k, v] of Object.entries(prev.heat)) if (k.startsWith(ymd(monthStart).slice(0, 7))) heat[k] = Math.max(heat[k] || 0, v);
+    return { fetched, days, events: merged, heat, errors, stale: true, lastGood: prev ? prev.lastGood : null };
+  }
+
+  // A whole month, for the grid's arrows and for picking a day outside the feed.
+  async function fetchMonth(key) {
+    const [y, m] = key.split('-').map(Number);
+    const from = new Date(y, m - 1, 1), to = new Date(y, m, 1);
+    const { events, errors, asked } = await readEvents(from, to, null);
+    if (!asked) throw new Error('waiting for Outlook');
+    return { month: key, heat: heatFor(events, from, to), events, errors };
+  }
+
+  // The newest Other conversations of one inbox, newest first, as the card draws them.
+  async function fetchOther(account, limit) {
+    const acct = accountMap().find(a => a.address === account);
+    if (!acct) throw new Error('unknown account');
+    const max = Math.max(1, Math.min(1000, Math.floor(limit) || 40));
+    const by = f => ({ __type: 'SortResults:#Exchange', Order: 'Descending', Path: PROP(f) });
+    const out = await owa(acct, 'FindConversation', {
+      ParentFolderId: { __type: 'TargetFolderId:#Exchange', BaseFolderId: { __type: 'DistinguishedFolderId:#Exchange', Id: 'inbox' } },
+      ConversationShape: { __type: 'ConversationResponseShape:#Exchange', BaseShape: 'IdOnly', AdditionalProperties: [PROP('ConversationInferenceClassification')] },
+      ShapeName: 'ReactConversationListView',
+      Paging: { __type: 'IndexedPageView:#Exchange', BasePoint: 'Beginning', Offset: 0, MaxEntriesReturned: max },
+      ViewFilter: 'All', FocusedViewFilter: 1,
+      SortOrder: [by('ConversationLastDeliveryOrRenewTime'), by('ConversationLastDeliveryTime')],
+    });
+    const convs = out.Conversations || [];
+    return {
+      account, fetched: new Date().toISOString(), more: convs.length >= max,
+      messages: convs.map(c => ({
+        id: (c.ItemIds && c.ItemIds[0] && c.ItemIds[0].Id) || (c.ConversationId && c.ConversationId.Id) || '',
+        subject: c.ConversationTopic || '',
+        from: (c.LastSender && c.LastSender.Mailbox && c.LastSender.Mailbox.Name) || (c.UniqueSenders && c.UniqueSenders[0]) || '',
+        received: c.LastDeliveryOrRenewTime || c.LastDeliveryTime,
+        read: !(c.UnreadCount > 0),
+        preview: (c.Preview || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+      })),
+    };
+  }
+
+  // The agenda is read when due (every AGENDA_REFRESH, a minute after a failure, and soon
+  // after Outlook signs a call for a new account), only in a window with a folder pane.
+  let agendaAsked = 0;
+  function ensureAgendaData(force) {
+    if (!cfg.agenda || !current() || !document.querySelector(PANE)) return;
+    const due = force || !agenda || Date.now() - Date.parse(agenda.fetched) > AGENDA_REFRESH;
+    if (!due || (!force && Date.now() - agendaAsked < 60000)) return;
+    agendaAsked = Date.now();
+    fetchAgenda(agenda).then(data => { if (current()) { agendaAsked = 0; setAgenda(data); } }, () => {});
+  }
+  let sessionTimer = 0;
+  const onSession = () => {
+    if (!current()) return;
+    clearTimeout(sessionTimer);
+    sessionTimer = setTimeout(() => { if (!current()) return; ensureAgendaData(true); if (other && other.error) askOther(); }, 1500);
+  };
+  session.on(onSession);
+
   // ==== agenda: a scrolling feed of the next few days, pinned to the bottom of the folder pane ====
-  // The injector fetches it from Graph and calls window.__olkt.agenda(data).
+  // fetchAgenda() reads it through Outlook's session and hands it to setAgenda(data).
   // Height: fills the free space below the folder tree until dragged; drag the top
   // edge to fix a height, double-click it to go back to filling.
   const AGENDA = '__agenda';
@@ -658,47 +929,11 @@
     return m < 60 ? `${m}m` : m % 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m / 60}h`;
   };
 
-  function setAgenda(data) { agenda = data; renderAgenda(); loadCharms(); return 'agenda ' + data.events.length; }
+  function setAgenda(data) { agenda = data; renderAgenda(); return 'agenda ' + data.events.length; }
 
-  // Outlook's event icons ("charms"). Graph does not expose them, but Outlook's offline
-  // store (IndexedDB owa-offline-data-*, store "events") keeps each event's CharmId, and
-  // the art is a public SVG per id. Rows match on subject and start (date for all-day).
+  // Outlook's event icons ("charms"): each event names its charm, and the art is a
+  // public SVG of that name.
   const CHARM_URL = 'https://res.public.onecdn.static.microsoft/assets/calendar/calendaricons/owa/svg/';
-  const CHARMS = Object.fromEntries(('1:cat 2:dog 3:plane 4:document1 5:firstaid 6:trophy 7:home 8:pill 9:luggage 10:cup 11:group 12:timer 13:music 14:shopping 15:car ' +
-    '16:star 17:document2 18:person 19:balloon 20:forkknife 21:heart 22:soccer 23:movie 24:chart 25:books 26:birthday 27:tv 28:travel 29:packagedelivery 30:promotion ' +
-    '31:event 32:hotel 33:creditcard 34:bike 35:boat 36:breakfast 37:brunch 38:bus 39:call 40:camping 41:chopsticks 42:class 43:dentist 44:facetime 45:guitar ' +
-    '46:gym 47:island 48:mail 49:meeting 50:professional 51:repair 52:skype 53:fitness 54:taxi 55:task 56:train 57:exam 58:goal 59:teams 60:lightbulb').split(' ').map(p => p.split(':')));
-  let charmMap = new Map();
-  let charmSig = '';
-  const charmKey = (subject, when) => (subject || '').trim() + '|' + when;
-  const eventCharm = e => charmMap.get(charmKey(e.subject, e.allDay ? e.start.slice(0, 10) : Date.parse(e.start)));
-
-  const idb = req => new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
-  async function loadCharms() {
-    const map = new Map();
-    try {
-      for (const { name } of await indexedDB.databases()) {
-        if (!name || !name.startsWith('owa-offline-data-')) continue;
-        let db;
-        try {
-          const open = indexedDB.open(name);
-          open.onupgradeneeded = () => open.transaction.abort(); // never create or upgrade Outlook's stores
-          db = await idb(open);
-          if (!db.objectStoreNames.contains('events')) continue;
-          for (const ev of await idb(db.transaction('events', 'readonly').objectStore('events').getAll())) {
-            if (!(ev.CharmId > 0) || !CHARMS[ev.CharmId] || !ev.Start) continue;
-            map.set(charmKey(ev.Subject, ev.IsAllDayEvent ? ymd(new Date(ev.Start)) : Date.parse(ev.Start)), ev.CharmId);
-          }
-        } catch {} finally { if (db) db.close(); }
-      }
-    } catch { return; }
-    if (!current()) return; // removed or replaced while the stores were read
-    const sig = [...map].join();
-    if (sig === charmSig) return;
-    charmMap = map;
-    charmSig = sig;
-    renderAgenda();
-  }
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -729,10 +964,9 @@
       : carried ? (end > nextDay(d) ? 'Continues' : `Until ${fmtTime(end)}`)
       : `${fmtTime(start)} · ${duration(end - start)}`;
     const title = el('b', null, e.subject);
-    const charm = eventCharm(e);
-    if (charm) {
+    if (e.charm) {
       const icon = el('span', 'olkt-charm');
-      icon.style.setProperty('--olkt-charm', `url("${CHARM_URL}${CHARMS[charm]}.svg")`);
+      icon.style.setProperty('--olkt-charm', 'url("' + CHARM_URL + e.charm + '.svg")');
       title.prepend(icon);
     }
     row.append(title, el('small', null, e.where ? `${when} · ${e.where}` : when));
@@ -750,14 +984,14 @@
       svg.appendChild(cam);
       join.appendChild(svg);
       if (now >= new Date(start - 10 * 60000) && now < end) join.classList.add('soon');
-      onPress(join, () => { try { window.olktOpen(e.join.url); } catch {} });
+      onPress(join, () => { window.open(e.join.url); });
       row.appendChild(join);
     }
     return row;
   }
 
   // Month grid, Monday first: each day shaded by booked hours, today in bold. The
-  // arrows change month (other months are fetched on demand through olktMonth);
+  // arrows change month (other months are read on demand);
   // clicking a day jumps the feed to it, or shows that day's events if it is
   // outside the upcoming feed.
   let viewMonth = null;      // first day of the month shown; null = the current month
@@ -770,13 +1004,13 @@
   // cached month is fetched again once it is older than agenda.refreshMinutes; the
   // cached copy stays on screen meanwhile.
   const monthPending = new Map(); // 'YYYY-MM' -> when it was asked for
-  const refreshMs = () => ((cfg.agenda && cfg.agenda.refreshMinutes) || 5) * 60000;
+  const refreshMs = () => AGENDA_REFRESH;
   function askMonth(key) {
     const cached = monthCache[key];
     if (cached && Date.now() - cached.at < refreshMs()) return;
     if (Date.now() - (monthPending.get(key) || 0) < 60000) return;
     monthPending.set(key, Date.now());
-    try { window.olktMonth(key); } catch { monthPending.delete(key); }
+    fetchMonth(key).then(data => { if (current()) setMonth(data); }, () => monthPending.delete(key));
   }
 
   function setMonth(data) {
@@ -912,7 +1146,7 @@
     agendaEl.appendChild(head);
 
     if (!folds[AGENDA]) {
-      agendaEl.appendChild(monthGrid(now));
+      if (cfg.monthHeatMap) agendaEl.appendChild(monthGrid(now));
       const feed = el('div', 'olkt-feed');
       if (selectedDay) {
         // A day outside the upcoming feed: its events, and a way back.
@@ -1006,7 +1240,7 @@
       layoutAgenda();
     });
   }
-  const agendaTimer = setInterval(() => { if (current()) renderAgenda(); else clearInterval(agendaTimer); }, 60000);
+  const agendaTimer = setInterval(() => { if (!current()) { clearInterval(agendaTimer); return; } ensureAgendaData(); renderAgenda(); }, 60000);
 
   // ==== menus and rename ====
   function closeMenus() {
@@ -1244,7 +1478,7 @@
 
   // ==== Other inbox under Focused ====
   // While an inbox shows its Focused tab, the bottom of the message list holds the Other
-  // tab's newest messages (from Graph through olktOther), with a drag grip on its top
+  // tab's newest conversations (read through Outlook's session), with a drag grip on its top
   // edge. A row opens that message in its own Outlook window.
   const OTHER_H_KEY = 'olkt-other-height';
   const OTHER_REFRESH = 120000;
@@ -1268,7 +1502,8 @@
     return 'other ' + ((data && data.messages) || []).length; }
   function askOther() {
     otherAsked = Date.now();
-    try { window.olktOther(`${otherAccount} ${otherLimit}`); } catch {}
+    const account = otherAccount;
+    fetchOther(account, otherLimit).then(data => { if (current()) setOther(data); }, err => { if (current()) setOther({ account, error: err.message }); });
   }
 
   function otherCss(out) {
@@ -1340,8 +1575,7 @@
   }
 
   function ensureOther() {
-    // No olktOther binding (inject.mjs --once, or an older injector): leave Outlook's tabs alone.
-    const col = cfg.otherPanel !== false && typeof window.olktOther === 'function' && document.querySelector(MSGLIST);
+    const col = cfg.otherCard && document.querySelector(MSGLIST);
     if (col) ensureOtherToggle();
     const account = col && otherSplit && focusedTabActive() ? inboxAccount() : null;
     if (!account) { if (otherEl) { otherEl.remove(); otherEl = null; } return; }
@@ -1433,7 +1667,7 @@
         }
         if (!otherFolds[g]) list.appendChild(otherRow(m, now));
       }
-      // Graph returns at most 1000 at once, so paging stops there.
+      // One FindConversation page holds at most 1000, so paging stops there.
       if (other.more && otherLimit < 1000) {
         const more = el('div', 'olkt-omore', 'Show more');
         more.setAttribute('role', 'button');
@@ -1951,6 +2185,7 @@
   function ensure() {
     ensureCalendar();
     ensureReading();
+    ensureAgendaData();
     ensureOther();
     const list = favoritesList();
     if (!list) return;
@@ -2017,7 +2252,6 @@
     document.addEventListener('keydown', onDocKey, true);
     document.addEventListener('keydown', onWellKey, true);
     window.addEventListener('storage', onStorage);
-    try { if (window.olktReady) window.olktReady(''); } catch {}
   }
 
   window.__olkt = {
@@ -2029,6 +2263,8 @@
       document.removeEventListener('keydown', onDocKey, true);
       document.removeEventListener('keydown', onWellKey, true);
       window.removeEventListener('storage', onStorage);
+      session.off(onSession);
+      clearTimeout(sessionTimer);
       if (boundList) unbindList(boundList);
       if (acctListBound) acctListBound.removeEventListener('pointerdown', onAcctPress, true);
       clearInterval(agendaTimer);
@@ -2043,6 +2279,7 @@
     agenda: setAgenda,
     other: setOther,
     month: setMonth,
+    refresh: () => { agendaAsked = 0; ensureAgendaData(true); if (otherAccount) askOther(); return 'refreshing'; },
   };
   if (document.body) start(); else addEventListener('DOMContentLoaded', start, { once: true });
   return 'installed';

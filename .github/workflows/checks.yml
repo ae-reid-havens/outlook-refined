@@ -1,0 +1,42 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-scrub:
+    name: Build the mod and check for personal data
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Page script parses
+        run: |
+          set -euo pipefail
+          node --check src/page.js
+
+      - name: The published mod matches its sources
+        run: |
+          set -euo pipefail
+          node build.mjs
+          if ! git diff --quiet -- mods/outlook-refined.wh.cpp; then
+            echo "mods/outlook-refined.wh.cpp is out of date; run node build.mjs and commit the result" >&2
+            git --no-pager diff --stat -- mods/outlook-refined.wh.cpp >&2
+            exit 1
+          fi
+
+      - name: No personal data in any tracked file
+        run: |
+          set -euo pipefail
+          node scripts/scrub-check.mjs

@@ -14,9 +14,10 @@
   // the session Outlook is already signed in to. The headers stay inside this closure: the
   // store only says which mailboxes it holds and sends requests on their behalf. Nothing
   // is stored or logged, and removing the mod leaves the wrappers idle.
-  const SESSION_V = 3;
+  const SESSION_V = 4;
   const session = (window.__olktSession && window.__olktSession.v === SESSION_V) ? window.__olktSession : (window.__olktSession = (() => {
     const byAnchor = new Map(); // x-anchormailbox -> { base, headers, at }
+    const byCategory = new Map(); // x-anchormailbox (or '*') -> Map(category name -> colour index)
     const KEEP = ['authorization', 'x-owa-sessionid', 'x-client-version', 'x-tenantid', 'prefer', 'x-owa-hosted-ux', 'x-req-source'];
     const listeners = new Set();
     const entries = src => {
@@ -43,13 +44,36 @@
       byAnchor.set(anchor, { base: u.origin + u.pathname, headers: kept, at: Date.now() });
       if (fresh) for (const fn of listeners) { try { fn(anchor); } catch {} }
     };
+    // Each category in the startup payload is written as {"Name":"...","Color":n,"Id":"..."},
+    // where the colour is an index into Outlook's fixed palette. Pulled out with a search
+    // rather than by parsing the whole payload, which is large and none of our business.
+    const CATEGORY = /\{"Name":"((?:[^"\\]|\\.)*)","Color":(-?\d+),"Id":"/g;
+    const readPalette = (anchor, text) => {
+      const map = new Map();
+      for (const m of text.matchAll(CATEGORY)) {
+        let name = m[1];
+        try { name = JSON.parse('"' + m[1] + '"'); } catch {}
+        const color = Number(m[2]);
+        if (name && color >= 0) map.set(name, color);
+      }
+      if (map.size) byCategory.set(anchor || '*', map);
+    };
+    const isStartup = url => { try { return /\/owa\/startupdata\.ashx/i.test(new URL(url, location.href).pathname); } catch { return false; } };
     const nativeFetch = window.fetch;
     window.fetch = function (input, init) {
+      let url, anchor;
       try {
-        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input && input.url;
-        note(url, entries((init && init.headers) || (input && input.headers)));
+        url = typeof input === 'string' ? input : input instanceof URL ? input.href : input && input.url;
+        const headers = entries((init && init.headers) || (input && input.headers));
+        note(url, headers);
+        for (const [k, v] of headers) if (String(k).toLowerCase() === 'x-anchormailbox') anchor = String(v);
       } catch {}
-      return nativeFetch.apply(this, arguments);
+      const out = nativeFetch.apply(this, arguments);
+      if (url && isStartup(url)) {
+        // A copy is read, so Outlook still gets its own body untouched.
+        try { out.then(res => res.clone().text().then(t => readPalette(anchor, t), () => {}), () => {}); } catch {}
+      }
+      return out;
     };
     const X = XMLHttpRequest.prototype, open = X.open, setHeader = X.setRequestHeader, send = X.send;
     X.open = function (method, url) { this.__olktUrl = String(url); this.__olktHeaders = []; return open.apply(this, arguments); };
@@ -58,6 +82,8 @@
     return {
       v: SESSION_V,
       has: anchor => byAnchor.has(anchor),
+      // The category palette for a mailbox, if Outlook has loaded one this session.
+      palette: anchor => byCategory.get(anchor) || byCategory.get('*') || null,
       anchors: () => [...byAnchor.keys()],
       on: fn => listeners.add(fn),
       off: fn => listeners.delete(fn),
@@ -772,6 +798,20 @@
     return undefined;
   }
   const joinIn = (...texts) => { for (const t of texts) { const j = meetingLink(t); if (j) return j; } return undefined; };
+  // Outlook's 25 category colours, in the order its colour index uses.
+  const CATEGORY_COLORS = ('#d13438 #ca5010 #8e562e #c19c00 #498205 #038387 #5c7e10 #0078d4 #8764b8 #c30052 ' +
+    '#69797e #394146 #7a7574 #525252 #000000 #750b1c #8e3b05 #4d291c #817400 #0b6a0b ' +
+    '#005b70 #3a4d00 #004e8c #5c2e91 #77004d').split(' ');
+  const categoryColor = (acct, categories) => {
+    const palette = session.palette(acct.anchor);
+    if (!palette || !categories) return '';
+    for (const name of categories) {
+      const i = palette.get(name);
+      if (i >= 0 && i < CATEGORY_COLORS.length) return CATEGORY_COLORS[i];
+    }
+    return '';
+  };
+
   const calendarCache = new Map(); // address -> { byFolder, fallback, at }
   const CAL_COLOR_TTL = 1800000;
   async function calendarColors(acct) {
@@ -817,7 +857,9 @@
         start: allDay ? dateOnly(i.StartWallClock || i.Start) : instant(i.Start),
         end: allDay ? dateOnly(i.EndWallClock || i.End) : instant(i.End),
         allDay, free: i.FreeBusyType === 'Free', account: acct.address, label: acct.label,
-        color: (colors && (colors.byFolder.get(i.ParentFolderId && i.ParentFolderId.Id) || colors.fallback)) || acct.color,
+        color: categoryColor(acct, i.Categories)
+          || (colors && (colors.byFolder.get(i.ParentFolderId && i.ParentFolderId.Id) || colors.fallback))
+          || acct.color,
         repeating: i.CalendarItemType === 'Occurrence' || i.CalendarItemType === 'Exception',
         categories: i.Categories && i.Categories.length ? i.Categories : undefined,
         where: meetingLink(place) || /^microsoft teams meeting$/i.test(place) ? '' : place,

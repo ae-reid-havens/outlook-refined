@@ -1614,9 +1614,11 @@
     const sel = document.querySelector('[role="treeitem"][aria-selected="true"]');
     if (!sel) {
       // Right after startup no folder is selected yet; the URL still says which inbox shows.
+      // A cold start sits at /mail/ (or /mail/<address>/) with no folder named at all, and
+      // that is the account's inbox, so the folder part is optional.
       let path = location.pathname;
       try { path = decodeURIComponent(path); } catch {}
-      const u = /^\/mail\/(?:([^/]+@[^/]+)\/)?inbox(?:\/|$)/i.exec(path);
+      const u = /^\/mail\/(?:([^/]+@[^/]+)\/)?(?:inbox)?(?:\/|$)/i.exec(path);
       return u ? ((u[1] || primary()).toLowerCase() || null) : null;
     }
     const name = sel.getAttribute('data-folder-name') || '';

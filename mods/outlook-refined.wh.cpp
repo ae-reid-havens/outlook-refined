@@ -160,10 +160,12 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // Outlook signs each call to its mail service with a per-account Authorization header.
   // fetch and XMLHttpRequest are wrapped once per page to keep the newest such headers
   // per mailbox, so the agenda, month grid and Other card can ask that same service with
-  // the session Outlook is already signed in to. Nothing is stored or logged, and
-  // window.__olkt exposes none of it. Removing the mod leaves the wrappers idle.
-  const session = window.__olktSession || (window.__olktSession = (() => {
-    const byAnchor = new Map(); // x-anchormailbox -> { headers, at }
+  // the session Outlook is already signed in to. The headers stay inside this closure: the
+  // store only says which mailboxes it holds and sends requests on their behalf. Nothing
+  // is stored or logged, and removing the mod leaves the wrappers idle.
+  const SESSION_V = 3;
+  const session = (window.__olktSession && window.__olktSession.v === SESSION_V) ? window.__olktSession : (window.__olktSession = (() => {
+    const byAnchor = new Map(); // x-anchormailbox -> { base, headers, at }
     const KEEP = ['authorization', 'x-owa-sessionid', 'x-client-version', 'x-tenantid', 'prefer', 'x-owa-hosted-ux', 'x-req-source'];
     const listeners = new Set();
     const entries = src => {
@@ -173,16 +175,21 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
         return Array.isArray(src) ? src : Object.entries(src);
       } catch { return []; }
     };
+    // Outlook addresses its own service with a relative URL as often as an absolute one, so
+    // the address is resolved against the page before it is matched. The service's own base
+    // is kept per mailbox, so each one is asked on the host Outlook itself used.
     const note = (url, headers) => {
-      if (typeof url !== 'string' || !url.includes('/owa/service.svc?action=')) return;
+      let u;
+      try { u = new URL(url, location.href); } catch { return; }
+      if (u.protocol !== 'https:' || !u.pathname.includes('/owa/') || !/\/service\.svc$/.test(u.pathname) || !u.searchParams.get('action')) return;
       const h = {};
       for (const [k, v] of headers) h[String(k).toLowerCase()] = String(v);
       const anchor = h['x-anchormailbox'];
-      if (!anchor || !/^Bearer /.test(h.authorization || '') || h['x-owa-actionsource'] === 'OutlookRefined') return;
+      if (!anchor || !/^Bearer /.test(h.authorization || '')) return;
       const kept = {};
       for (const k of KEEP) if (h[k]) kept[k] = h[k];
       const fresh = !byAnchor.has(anchor);
-      byAnchor.set(anchor, { headers: kept, at: Date.now() });
+      byAnchor.set(anchor, { base: u.origin + u.pathname, headers: kept, at: Date.now() });
       if (fresh) for (const fn of listeners) { try { fn(anchor); } catch {} }
     };
     const nativeFetch = window.fetch;
@@ -198,10 +205,19 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     X.setRequestHeader = function (k, v) { if (this.__olktHeaders) this.__olktHeaders.push([k, v]); return setHeader.apply(this, arguments); };
     X.send = function () { try { note(this.__olktUrl, this.__olktHeaders || []); } catch {} return send.apply(this, arguments); };
     return {
-      headers: anchor => { const e = byAnchor.get(anchor); return e ? { ...e.headers } : null; },
+      v: SESSION_V,
+      has: anchor => byAnchor.has(anchor),
       anchors: () => [...byAnchor.keys()],
       on: fn => listeners.add(fn),
       off: fn => listeners.delete(fn),
+      // One service call on a mailbox's behalf, with the headers kept for it, to the same
+      // service host Outlook used. body is the JSON text to post; resolves to the Response.
+      call(anchor, action, body, n) {
+        const e = byAnchor.get(anchor);
+        if (!e) return Promise.reject(new Error('waiting for Outlook'));
+        const headers = { ...e.headers, action, 'x-anchormailbox': anchor, 'content-type': 'application/json; charset=utf-8', 'x-owa-actionsource': 'OutlookRefined' };
+        return nativeFetch.call(window, e.base + '?action=' + action + '&app=Mail&n=' + n, { method: 'POST', headers, body });
+      },
     };
   })());
   // Each install replaces the previous one. Older copies (for example from an
@@ -838,21 +854,18 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // ==== calendar and Other inbox through Outlook's own service ====
   // The same JSON calls Outlook's page makes to its mail service, sent with the headers
   // kept above. Property names are EWS field URIs; one unknown name fails a whole call.
-  const OWA_URL = 'https://outlook.office.com/owa/service.svc?action=';
   const OWA_HEADER = { __type: 'JsonRequestHeaders:#Exchange', RequestServerVersion: 'V2018_01_08', TimeZoneContext: { __type: 'TimeZoneContext:#Exchange', TimeZoneDefinition: { __type: 'TimeZoneDefinitionType:#Exchange', Id: 'UTC' } } };
   const PROP = f => ({ __type: 'PropertyUri:#Exchange', FieldURI: f });
   let owaCount = 0;
-  async function owa(acct, action, body) {
-    const kept = session.headers(acct.anchor);
-    if (!kept) throw new Error('waiting for Outlook');
-    const headers = { ...kept, action, 'x-anchormailbox': acct.anchor, 'content-type': 'application/json; charset=utf-8', 'x-owa-actionsource': 'OutlookRefined' };
-    const res = await fetch(OWA_URL + action + '&app=Mail&n=' + (++owaCount), { method: 'POST', headers, body: JSON.stringify({ __type: action + 'JsonRequest:#Exchange', Header: OWA_HEADER, Body: body }) });
+  // multi: a batch whose per-item results the caller checks itself.
+  async function owa(acct, action, body, multi) {
+    const res = await session.call(acct.anchor, action, JSON.stringify({ __type: action + 'JsonRequest:#Exchange', Header: OWA_HEADER, Body: body }), ++owaCount);
     if (!res.ok) throw new Error(action + ' failed (' + res.status + ')');
     const json = await res.json();
     const out = json && json.Body;
     if (!out) throw new Error(action + ': empty reply');
     const msg = out.ResponseMessages && out.ResponseMessages.Items ? out.ResponseMessages.Items[0] : out;
-    if (msg && msg.ResponseClass && msg.ResponseClass !== 'Success') throw new Error(action + ': ' + (msg.MessageText || msg.ResponseCode || msg.ResponseClass));
+    if (!multi && msg && msg.ResponseClass && msg.ResponseClass !== 'Success') throw new Error(action + ': ' + (msg.MessageText || msg.ResponseCode || msg.ResponseClass));
     return out;
   }
 
@@ -879,17 +892,27 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     return out;
   }
 
-  // Join links: the server's own field when set, else the first meeting link in the
-  // location or preview, else (agenda days only) in the invite's text, read in one batch.
-  const MEETING_URL = /https:\/\/[^\s"'<>]*?(teams\.microsoft\.com\/l\/meetup-join|teams\.live\.com\/meet|zoom\.us\/[jw]\/|meet\.google\.com\/|webex\.com\/)[^\s"'<>]*/i;
-  function joinIn(...texts) {
-    for (const t of texts) {
-      const m = MEETING_URL.exec(t || '');
-      if (m) return { url: m[0], kind: /zoom\.us/i.test(m[0]) ? 'Zoom' : /google/i.test(m[0]) ? 'Meet' : /webex/i.test(m[0]) ? 'Webex' : 'Teams' };
+  // Join links: a meeting link is trusted by its host (and, for Teams and Zoom, its path),
+  // never by a provider's name elsewhere in the URL; punctuation that plain text leaves on
+  // the end is dropped. Sources: the server's own field, the location or preview, else
+  // (agenda days only) the invite's text, read in one batch.
+  const MEETING_HOSTS = [['teams.microsoft.com', 'Teams'], ['teams.live.com', 'Teams'], ['zoom.us', 'Zoom'], ['meet.google.com', 'Meet'], ['webex.com', 'Webex']];
+  const URLS_IN_TEXT = /https:\/\/[^\s"'<>]+/g;
+  function meetingLink(text) {
+    for (const raw of String(text || '').match(URLS_IN_TEXT) || []) {
+      let u;
+      try { u = new URL(raw.replace(/[.,;:)\]]+$/, '')); } catch { continue; }
+      const host = u.hostname.toLowerCase();
+      const hit = MEETING_HOSTS.find(([h]) => host === h || host.endsWith('.' + h));
+      if (!hit) continue;
+      if (hit[1] === 'Teams' && !/^\/(l\/meetup-join|meet)\//.test(u.pathname)) continue;
+      if (hit[1] === 'Zoom' && !/^\/[jw]\//.test(u.pathname)) continue;
+      return { url: u.href, kind: hit[1] };
     }
     return undefined;
   }
-  const CAL_PROPS = ['calendar:IsAllDayEvent', 'calendar:IsCancelled', 'calendar:IsSeriesCancelled', 'calendar:Location', 'calendar:IsOnlineMeeting', 'calendar:JoinOnlineMeetingUrl', 'calendar:StartWallClock', 'calendar:EndWallClock', 'item:Categories', 'item:Preview', 'calendar:Charm'].map(PROP);
+  const joinIn = (...texts) => { for (const t of texts) { const j = meetingLink(t); if (j) return j; } return undefined; };
+  const CAL_PROPS = ['calendar:IsAllDayEvent', 'calendar:IsCancelled', 'calendar:IsSeriesCancelled', 'calendar:Location', 'calendar:IsOnlineMeeting', 'calendar:JoinOnlineMeetingUrl', 'calendar:StartWallClock', 'calendar:EndWallClock', 'item:Categories', 'item:Preview', 'calendar:Charm', 'calendar:UID'].map(PROP);
   const dateOnly = s => String(s).slice(0, 10) + 'T00:00:00Z'; // all-day events: the item's own date
   const instant = s => new Date(s).toISOString();
   // One account's events between from and to (occurrences expanded), as the agenda draws them.
@@ -905,12 +928,13 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       const place = (i.Location && i.Location.DisplayName) || '';
       const e = {
         id: i.ItemId && i.ItemId.Id,
+        uid: i.UID,
         subject: i.Subject || '(no title)',
         start: allDay ? dateOnly(i.StartWallClock || i.Start) : instant(i.Start),
         end: allDay ? dateOnly(i.EndWallClock || i.End) : instant(i.End),
         allDay, free: i.FreeBusyType === 'Free', account: acct.address, label: acct.label, color: acct.color,
         categories: i.Categories && i.Categories.length ? i.Categories : undefined,
-        where: MEETING_URL.test(place) || /^microsoft teams meeting$/i.test(place) ? '' : place,
+        where: meetingLink(place) || /^microsoft teams meeting$/i.test(place) ? '' : place,
         charm: i.Charm && i.Charm !== 'None' ? String(i.Charm).toLowerCase() : undefined,
         join: joinIn(i.JoinOnlineMeetingUrl, place, i.Preview),
       };
@@ -922,9 +946,9 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       // The invite text holds the link when the field above is empty (most Teams invites).
       // A failure here only loses join buttons, never the events.
       try {
-        const got = await owa(acct, 'GetItem', { ItemIds: bodies.slice(0, 20).map(e => ({ __type: 'ItemId:#Exchange', Id: e.id })), ItemShape: { __type: 'ItemResponseShape:#Exchange', BaseShape: 'IdOnly', BodyType: 'Text', AdditionalProperties: [PROP('item:Body')] } });
+        const got = await owa(acct, 'GetItem', { ItemIds: bodies.slice(0, 20).map(e => ({ __type: 'ItemId:#Exchange', Id: e.id })), ItemShape: { __type: 'ItemResponseShape:#Exchange', BaseShape: 'IdOnly', BodyType: 'Text', AdditionalProperties: [PROP('item:Body')] } }, true);
         ((got.ResponseMessages && got.ResponseMessages.Items) || []).forEach((m, k) => {
-          const item = m.Items && m.Items[0];
+          const item = m.ResponseClass === 'Success' && m.Items && m.Items[0];
           if (item && bodies[k]) bodies[k].join = joinIn(item.Body && item.Body.Value);
         });
       } catch {}
@@ -933,28 +957,41 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   }
 
   // Every account's events between from and to: declined and cancelled ones dropped, the
-  // same meeting on two calendars kept once. An account Outlook has not signed a call for
-  // yet is reported as waiting; a failed read is reported and marks the result stale.
+  // same meeting kept on two calendars shown once. An account Outlook has not signed a call
+  // for yet is reported as waiting; a failed read is reported too.
+  // Copies of one meeting on two mailboxes carry different UIDs, so the match is subject,
+  // start and end together; two different items on ONE calendar are both kept, even when
+  // they share a subject and start.
+  const eventKey = e => e.subject + '|' + e.start + '|' + e.end;
   async function readEvents(from, to, joinsUntil) {
     const accounts = accountMap();
     const events = [], errors = [], failed = [];
-    let asked = 0, broke = false;
+    let asked = 0, succeeded = 0;
     await Promise.all(accounts.map(async acct => {
-      if (!session.headers(acct.anchor)) { failed.push(acct.address); errors.push(acct.label + ': waiting for Outlook'); return; }
+      if (!session.has(acct.anchor)) { failed.push(acct.address); errors.push(acct.label + ': waiting for Outlook'); return; }
       asked++;
-      try { events.push(...await readAccount(acct, from, to, joinsUntil)); }
-      catch (err) { failed.push(acct.address); errors.push(acct.label + ': ' + err.message); broke = true; }
+      try { events.push(...await readAccount(acct, from, to, joinsUntil)); succeeded++; }
+      catch (err) { failed.push(acct.address); errors.push(acct.label + ': ' + err.message); }
     }));
     const order = accounts.map(a => a.address);
     events.sort((a, b) => a.start.localeCompare(b.start) || order.indexOf(a.account) - order.indexOf(b.account));
-    const byKey = new Map();
+    const first = new Map(); // subject|start|end -> the copy being shown
+    const seen = new Set();   // account + occurrence, so one occurrence never lands twice
+    const out = [];
     for (const e of events) {
-      const k = e.subject + '|' + e.start, kept = byKey.get(k);
-      if (!kept) { byKey.set(k, e); continue; }
-      // The same meeting on two calendars: the first copy stays, and takes what it lacks.
-      for (const f of ['join', 'charm', 'where', 'categories']) if (!kept[f] && e[f]) kept[f] = e[f];
+      // A recurring series shares its UID, so the occurrence is the item plus its start.
+      const occurrence = e.account + '|' + (e.uid || e.id || '') + '|' + e.start;
+      if (e.uid || e.id) { if (seen.has(occurrence)) continue; seen.add(occurrence); }
+      const kept = first.get(eventKey(e));
+      if (kept && kept.account !== e.account) {
+        // The same meeting on another calendar: the first copy stays, and takes what it lacks.
+        for (const f of ['join', 'charm', 'where', 'categories']) if (!kept[f] && e[f]) kept[f] = e[f];
+        continue;
+      }
+      if (!kept) first.set(eventKey(e), e);
+      out.push(e);
     }
-    return { events: [...byKey.values()], errors, failed, asked, broke };
+    return { events: out, errors, failed, asked, succeeded, broke: asked > succeeded };
   }
 
   // Busy minutes per local day (timed events not marked free), clipped to each day.
@@ -975,37 +1012,46 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   }
 
   const AGENDA_REFRESH = 300000;
-  // The upcoming feed (today plus the next days) and this month's heat, in one read. An
-  // account that fails keeps its events from the previous agenda, and the result is stale.
+  const addHeat = (into, heat) => { for (const [k, v] of Object.entries(heat || {})) into[k] = (into[k] || 0) + v; return into; };
+  // The upcoming feed (today plus the next days) and, with the month grid on, this month's
+  // events and heat, in one read. An account that fails keeps its events and heat from the
+  // previous agenda; the result is marked stale and read again a minute later.
   async function fetchAgenda(prev) {
     const now = new Date();
     const days = cfg.agendaDays;
     const end = new Date(now); end.setDate(end.getDate() + days); end.setHours(0, 0, 0, 0);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    const { events, errors, failed, asked, broke } = await readEvents(monthStart, monthEnd > end ? monthEnd : end, end);
-    if (!asked) throw new Error('waiting for Outlook');
+    const month = ym(monthStart);
+    const wholeMonth = !!cfg.monthHeatMap;
+    const from = wholeMonth ? monthStart : dayStart(now);
+    const to = wholeMonth && monthEnd > end ? monthEnd : end;
+    const { events, errors, failed, succeeded, broke } = await readEvents(from, to, end);
+    if (!succeeded) throw new Error(errors.join('; ') || 'waiting for Outlook');
     const today = ymd(now);
     const live = e => new Date(e.start) < end && (e.allDay ? e.end.slice(0, 10) > today : new Date(e.end) >= now);
-    const feed = events.filter(live);
-    const heat = heatFor(events, monthStart, monthEnd);
+    // Heat per account, so a failed account's last known heat can stand in for it.
+    const heatBy = {};
+    if (wholeMonth) for (const acct of accountMap()) heatBy[acct.address] = heatFor(events.filter(e => e.account === acct.address), monthStart, monthEnd);
+    const monthEvents = wholeMonth ? events : undefined;
     const fetched = now.toISOString();
-    if (!broke) return { fetched, days, events: feed, heat, errors, stale: false, lastGood: fetched };
-    const key = e => e.subject + '|' + e.start;
-    const have = new Set(feed.map(key));
-    const kept = prev ? prev.events.filter(e => failed.includes(e.account) && live(e) && !have.has(key(e))) : [];
+    if (!broke) return { fetched, days, month, events: events.filter(live), monthEvents, heat: Object.values(heatBy).reduce(addHeat, {}), heatBy, errors, stale: false, lastGood: fetched };
+    const carry = prev && prev.month === month ? prev : null;
+    const have = new Set(events.map(eventKey));
+    const kept = carry ? carry.events.filter(e => failed.includes(e.account) && live(e) && !have.has(eventKey(e))) : [];
     const order = accountMap().map(a => a.address);
-    const merged = feed.concat(kept).sort((a, b) => a.start.localeCompare(b.start) || order.indexOf(a.account) - order.indexOf(b.account));
-    if (prev && prev.heat) for (const [k, v] of Object.entries(prev.heat)) if (k.startsWith(ymd(monthStart).slice(0, 7))) heat[k] = Math.max(heat[k] || 0, v);
-    return { fetched, days, events: merged, heat, errors, stale: true, lastGood: prev ? prev.lastGood : null };
+    const merged = events.filter(live).concat(kept).sort((a, b) => a.start.localeCompare(b.start) || order.indexOf(a.account) - order.indexOf(b.account));
+    if (carry && carry.heatBy) for (const a of failed) if (carry.heatBy[a]) heatBy[a] = carry.heatBy[a];
+    // The read time stays the last good one, so the agenda counts as due and is retried.
+    return { fetched: prev ? prev.fetched : new Date(0).toISOString(), days, month, events: merged, monthEvents, heat: Object.values(heatBy).reduce(addHeat, {}), heatBy, errors, stale: true, lastGood: prev ? prev.lastGood : null };
   }
 
   // A whole month, for the grid's arrows and for picking a day outside the feed.
   async function fetchMonth(key) {
     const [y, m] = key.split('-').map(Number);
     const from = new Date(y, m - 1, 1), to = new Date(y, m, 1);
-    const { events, errors, asked } = await readEvents(from, to, null);
-    if (!asked) throw new Error('waiting for Outlook');
+    const { events, errors, succeeded } = await readEvents(from, to, null);
+    if (!succeeded) throw new Error(errors.join('; ') || 'waiting for Outlook');
     return { month: key, heat: heatFor(events, from, to), events, errors };
   }
 
@@ -1037,15 +1083,22 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     };
   }
 
-  // The agenda is read when due (every AGENDA_REFRESH, a minute after a failure, and soon
-  // after Outlook signs a call for a new account), only in a window with a folder pane.
-  let agendaAsked = 0;
+  // The agenda is read when due (every AGENDA_REFRESH, a minute after a failure or a stale
+  // result, and soon after Outlook signs a call for a new account), only in a window with a
+  // folder pane. Only the newest request may answer: a new account's headers can arrive
+  // mid-read and start another.
+  let agendaAsked = 0, agendaRun = 0;
   function ensureAgendaData(force) {
     if (!cfg.agenda || !current() || !document.querySelector(PANE)) return;
     const due = force || !agenda || Date.now() - Date.parse(agenda.fetched) > AGENDA_REFRESH;
     if (!due || (!force && Date.now() - agendaAsked < 60000)) return;
     agendaAsked = Date.now();
-    fetchAgenda(agenda).then(data => { if (current()) { agendaAsked = 0; setAgenda(data); } }, () => {});
+    const run = ++agendaRun;
+    fetchAgenda(agenda).then(data => {
+      if (run !== agendaRun || !current()) return;
+      if (!data.stale) agendaAsked = 0;
+      setAgenda(data);
+    }, () => {});
   }
   let sessionTimer = 0;
   const onSession = () => {
@@ -1171,7 +1224,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
 
   function monthData(d) {
     const key = ym(d);
-    if (key === ym(new Date())) return { heat: agenda.heat || {}, events: monthCache[key] ? monthCache[key].events : null };
+    if (key === ym(new Date())) return { heat: agenda.heat || {}, events: monthCache[key] ? monthCache[key].events : (agenda.monthEvents || null) };
     return monthCache[key] || null;
   }
 
@@ -1308,7 +1361,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
         const md = monthData(selectedDay);
         if (md && md.events) dayRows(feed, md.events, selectedDay, now, 'Nothing scheduled');
         else feed.appendChild(el('div', 'olkt-none', 'Loading...'));
-        askMonth(ym(selectedDay));
+        if (!md || !md.events) askMonth(ym(selectedDay));
       } else {
         for (let i = 0; i < (agenda.days || 2); i++) {
           const d = new Date(now); d.setDate(d.getDate() + i);
@@ -1649,10 +1702,12 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       renderOther();
     }
     return 'other ' + ((data && data.messages) || []).length; }
+  let otherRun = 0;
   function askOther() {
     otherAsked = Date.now();
-    const account = otherAccount;
-    fetchOther(account, otherLimit).then(data => { if (current()) setOther(data); }, err => { if (current()) setOther({ account, error: err.message }); });
+    // Only the newest request may answer: a refresh and a "Show more" can overlap.
+    const account = otherAccount, run = ++otherRun;
+    fetchOther(account, otherLimit).then(data => { if (run === otherRun && current()) setOther(data); }, err => { if (run === otherRun && current()) setOther({ account, error: err.message }); });
   }
 
   function otherCss(out) {

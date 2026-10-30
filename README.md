@@ -38,15 +38,24 @@ tabs switches back to Outlook's own arrangement.
 and end times on event tiles, and overlapping events cascaded rather than squeezed, with larger
 pile-ups merged into a single tile that opens the group.
 
+![One row per account, compact time zone columns, times on tiles and overlapping events merged
+into one tile](docs/calendar.png)
+
 **Reading pane.** To and Cc share one line that expands when clicked, the blocked-content bar
 shrinks to a chip, and the message body stops at a readable width. The ribbon loses the row of
 group names under its buttons.
+
+![The reading pane with To and Cc on one line and a compact blocked-content
+bar](docs/reading-pane.png)
 
 **Print.** Printing a message prints the message: the folder pane, message list, ribbon and
 buttons go, panes that scroll are released so nothing is cut off at the visible edge, text is
 black on white even when Outlook is in dark mode, quoted replies can be lightened or dropped,
 pictures and tables are never split across two pages, and anything too wide for the page is
 scaled to fit.
+
+![The same message printed: panes and buttons gone, black on white, the thread history
+greyed](docs/print.png)
 
 ## Requirements
 

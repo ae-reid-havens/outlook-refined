@@ -2173,6 +2173,16 @@
     out.push(`${READING} *{background-color:transparent!important;box-shadow:none!important}`);
     out.push(`${READING},${READING} *{color:#000!important;-webkit-text-fill-color:#000!important}`);
     out.push(`${BODY} a{text-decoration:underline}`);
+    // The one-line recipients rule relies on clipping, which print undoes, so the names would
+    // otherwise spill across the date. On paper they wrap instead.
+    // Written through the pane so these outrank the screen rule, which is more specific than a
+    // bare `WELL` selector and would otherwise keep the line in its one-line form.
+    const printWell = `${READING} ${WELL}:not([data-olkt-open])`;
+    out.push(`${printWell}{display:block!important}`);
+    out.push(`${printWell} > div{flex:none!important;display:block!important;max-width:100%!important;overflow:visible!important}`);
+    // Outlook measures each line and pins its width inline, so the names must be let out of it.
+    out.push(`${printWell} .EditorClass{display:block!important;width:auto!important;max-width:100%!important;white-space:normal!important;overflow:visible!important;text-overflow:clip!important}`);
+    out.push(`${READING} [data-olkt-collapsed]{display:none!important}`);
     if (p.compactHeader) {
       // The sender block, its avatar and the chips above the message take a third of page one.
       out.push(`${READING} img[alt][role="img"],${READING} [data-testid="persona-coin"],${READING} .fui-Avatar{display:none!important}`);
@@ -2218,6 +2228,24 @@
   // whose next elements are the previous message's "From:" block. Marked here rather than in
   // the stylesheet, so a rule used inside a real message is left alone.
   const QUOTED_HEAD = /^\s*(from|sent|date|to|subject)\s*:/i;
+  // "+2 others" and the like: the short form of a recipient line, which print would otherwise
+  // draw over the full list it stands in for.
+  const COLLAPSED = /^\s*\+\s*\d+\s+(others?|more)\b/i;
+  function markCollapsed() {
+    const well = document.querySelector(WELL);
+    if (!well) return;
+    for (const e of well.querySelectorAll('*')) {
+      if (e.children.length) continue;
+      if (COLLAPSED.test(e.textContent || '')) {
+        let n = e;
+        // The chip is usually a span inside a small wrapper; hide the wrapper when it holds
+        // nothing else, so its spacing goes too.
+        while (n.parentElement && n.parentElement !== well && n.parentElement.children.length === 1) n = n.parentElement;
+        n.setAttribute('data-olkt-collapsed', '');
+      }
+    }
+  }
+  const clearCollapsed = () => document.querySelectorAll('[data-olkt-collapsed]').forEach(n => n.removeAttribute('data-olkt-collapsed'));
   function markQuoted() {
     const body = document.querySelector(BODY);
     if (!body) return;
@@ -2245,11 +2273,12 @@
   const onBeforePrint = () => {
     try {
       if (cfg.print.quoted !== 'show') markQuoted();
+      markCollapsed();
       document.documentElement.style.setProperty('--olkt-print-scale', String(Math.round(printScale() * 1000) / 1000));
     } catch {}
   };
   const onAfterPrint = () => {
-    try { clearQuoted(); document.documentElement.style.removeProperty('--olkt-print-scale'); } catch {}
+    try { clearQuoted(); clearCollapsed(); document.documentElement.style.removeProperty('--olkt-print-scale'); } catch {}
   };
 
   function readingCss(out) {
@@ -2534,7 +2563,7 @@
       document.querySelectorAll(`${PANE} .customScrollBar`).forEach(n => { n.style.paddingBottom = ''; n.style.maxHeight = ''; });
       document.querySelectorAll(OURS).forEach(n => n.remove());
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));
-      for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked', 'data-olkt-quoted'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));
+      for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked', 'data-olkt-quoted', 'data-olkt-collapsed'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));
       delete window.__olkt;
       return 'removed';
     },

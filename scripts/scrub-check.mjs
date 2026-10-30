@@ -29,8 +29,14 @@ if (existsSync(localPath)) {
 const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { cwd: root, encoding: 'utf8' })
   .split('\n').filter(f => f && f !== SELF);
 
+// Pictures and other binaries are skipped: read as text they throw up matches from random
+// bytes (a screenshot tripped the word "caa"), and a term inside an image would be pixels,
+// which no grep can see. Screenshots are checked by eye before they are committed.
+const BINARY = /\.(png|jpe?g|gif|webp|ico|bmp|pdf|zip|gz|woff2?|ttf|otf|eot|mp4|webm|exe|dll)$/i;
+const binaries = files.filter(f => BINARY.test(f));
 let hits = 0;
 for (const file of files) {
+  if (BINARY.test(file)) continue;
   const text = readFileSync(new URL(file, root), 'utf8');
   text.split('\n').forEach((line, i) => {
     for (const [name, re] of checks) {
@@ -42,4 +48,5 @@ for (const file of files) {
   });
 }
 if (hits) { console.error(`scrub check failed: ${hits} hit(s)`); process.exit(1); }
-console.log(`scrub check passed: ${files.length} files, ${checks.length} patterns`);
+console.log(`scrub check passed: ${files.length - binaries.length} files, ${checks.length} patterns`
+  + (binaries.length ? `; ${binaries.length} binary file(s) skipped, check those by eye` : ''));

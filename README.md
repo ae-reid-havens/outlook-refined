@@ -9,6 +9,9 @@ Everything happens inside Outlook's own page. The mod restyles Outlook's element
 of its own; it never moves one of Outlook's, so Outlook keeps behaving as it did. Each tweak
 stands alone: if an Outlook update breaks one, the rest keep working.
 
+![The folder pane with grouped favorites, per-account compose buttons, a month grid and the
+agenda](docs/folder-pane.png)
+
 ## What it changes
 
 **Folder pane.** Favorites gather into groups that fold, with a count on a folded group.
@@ -28,6 +31,8 @@ events.
 **Other inbox.** Optionally, the newest conversations from an inbox's Other tab sit below the
 Focused list, drawn from Outlook's own list rows so they match it exactly. A button beside the
 tabs switches back to Outlook's own arrangement.
+
+![The Other inbox card below the Focused list](docs/other-inbox.png)
 
 **Calendar.** One row per account instead of one shared row, compact time zone columns, start
 and end times on event tiles, and overlapping events cascaded rather than squeezed, with larger

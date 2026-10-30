@@ -133,8 +133,9 @@ request. Turn the agenda, the month grid and the Other card off and no request i
 
 None of these break anything, but each one looks like a bug if it arrives unannounced:
 
-- An event that takes its color from a category gets its calendar's color instead. Outlook does
-  not hand the category palette to its own page, so the mod cannot read it either.
+- Category colors are read once per mailbox per session, from the same payload Outlook loads
+  them from. A category you add or recolor while Outlook is running keeps its old color in the
+  agenda until the next restart.
 - An account's events show up once Outlook has made its first call for that account in this
   session, usually within a few seconds of starting. Until then the agenda says which account it
   is still waiting for.

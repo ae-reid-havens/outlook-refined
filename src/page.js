@@ -57,7 +57,9 @@
         const color = Number(m[2]);
         if (name && color >= 0) map.set(name, color);
       }
-      if (map.size) byCategory.set(anchor || '*', map);
+      // Only for the mailbox it came from: two accounts can give the same category name
+      // different colours, and a palette with no mailbox on it belongs to none of them.
+      if (map.size && anchor) byCategory.set(anchor, map);
     };
     const isStartup = url => { try { return /\/owa\/startupdata\.ashx/i.test(new URL(url, location.href).pathname); } catch { return false; } };
     const nativeFetch = window.fetch;
@@ -84,7 +86,7 @@
       v: SESSION_V,
       has: anchor => byAnchor.has(anchor),
       // The category palette for a mailbox, if Outlook has loaded one this session.
-      palette: anchor => byCategory.get(anchor) || byCategory.get('*') || null,
+      palette: anchor => byCategory.get(anchor) || null,
       anchors: () => [...byAnchor.keys()],
       on: fn => listeners.add(fn),
       off: fn => listeners.delete(fn),
@@ -94,10 +96,15 @@
         const e = byAnchor.get(anchor);
         if (!e || byCategory.has(anchor) || asked.has(anchor)) return 0;
         asked.add(anchor);
+        // A request that fails is not an answer: let a later refresh try again, while the
+        // flag still stops two running at once.
+        const release = () => setTimeout(() => asked.delete(anchor), 60000);
         const headers = { ...e.headers, 'x-anchormailbox': anchor, 'content-type': 'application/json; charset=utf-8', 'x-owa-actionsource': 'OutlookRefined' };
         const url = new URL(e.base).origin + '/owa/startupdata.ashx?app=Mail&n=1';
-        const res = await nativeFetch.call(window, url, { method: 'POST', headers, body: '{}' });
-        if (!res.ok) throw new Error('startup payload: ' + res.status);
+        let res;
+        try { res = await nativeFetch.call(window, url, { method: 'POST', headers, body: '{}' }); }
+        catch (err) { release(); throw err; }
+        if (!res.ok) { release(); throw new Error('startup payload: ' + res.status); }
         readPalette(anchor, await res.text());
         const got = byCategory.get(anchor);
         return got ? got.size : 0;
@@ -759,12 +766,15 @@
   const PROP = f => ({ __type: 'PropertyUri:#Exchange', FieldURI: f });
   let owaCount = 0;
   // multi: a batch whose per-item results the caller checks itself.
+  // The handful of actions that answer with a bare object rather than the usual envelope.
+  const BARE_REPLY = new Set(['GetCalendarFolders']);
   async function owa(acct, action, body, multi) {
     const res = await session.call(acct.anchor, action, JSON.stringify({ __type: action + 'JsonRequest:#Exchange', Header: OWA_HEADER, Body: body }), ++owaCount);
     if (!res.ok) throw new Error(action + ' failed (' + res.status + ')');
     const json = await res.json();
-    const out = (json && json.Body) || json;
+    const out = (json && json.Body) || (BARE_REPLY.has(action) ? json : null);
     if (!out) throw new Error(action + ': empty reply');
+    if (out.ErrorCode || out.ExceptionName) throw new Error(action + ': ' + (out.ExceptionName || out.ErrorCode));
     const msg = out.ResponseMessages && out.ResponseMessages.Items ? out.ResponseMessages.Items[0] : out;
     if (!multi && msg && msg.ResponseClass && msg.ResponseClass !== 'Success') throw new Error(action + ': ' + (msg.MessageText || msg.ResponseCode || msg.ResponseClass));
     return out;
@@ -831,8 +841,14 @@
   const CAL_COLOR_TTL = 1800000;
   async function calendarColors(acct) {
     const cached = calendarCache.get(acct.address);
-    if (cached && Date.now() - cached.at < CAL_COLOR_TTL) return cached;
-    const j = await owa(acct, 'GetCalendarFolders', {});
+    if (cached && Date.now() - cached.at < (cached.failed ? 300000 : CAL_COLOR_TTL)) return cached.failed ? null : cached;
+    let j;
+    try { j = await owa(acct, 'GetCalendarFolders', {}); }
+    catch (err) {
+      // Remembered for five minutes so every refresh does not retry a call that is failing.
+      calendarCache.set(acct.address, { failed: true, at: Date.now(), byFolder: new Map(), fallback: '' });
+      throw err;
+    }
     const byFolder = new Map();
     let fallback = '';
     for (const g of j.CalendarGroups || []) {
@@ -2172,9 +2188,13 @@
   function printCss(out) {
     const p = cfg.print;
     out.push('@media print{');
+    // Only when a message is open: printing the calendar or any other view must stay
+    // Outlook's business, and hiding everything there would print a blank page.
+    const HAS = `body:has(${READING})`;
     // Hidden, not removed: Outlook's layout assumes its panes exist.
-    out.push(`body *{visibility:hidden!important}`);
-    out.push(`${READING},${READING} *{visibility:visible!important}`);
+    out.push(`${HAS} *{visibility:hidden!important}`);
+    // Scoped the same way, or the rule above (more specific now) would hide the message too.
+    out.push(`${HAS} ${READING},${HAS} ${READING} *{visibility:visible!important}`);
     out.push(`${READING}{position:absolute!important;left:0!important;top:0!important;width:100%!important;max-width:none!important;height:auto!important;overflow:visible!important}`);
     // Every scroller and fixed height between the pane and the message body, or only the
     // part that happens to be on screen reaches the paper.
@@ -2204,7 +2224,9 @@
     out.push(`${READING} [data-olkt-collapsed]{display:none!important}`);
     if (p.compactHeader) {
       // The sender block, its avatar and the chips above the message take a third of page one.
-      out.push(`${READING} img[alt][role="img"],${READING} [data-testid="persona-coin"],${READING} .fui-Avatar{display:none!important}`);
+      // Scoped out of the message body: an email's own picture can carry the same markup as
+      // a sender avatar, and a hidden one cannot be brought back by a later rule.
+      out.push(`${READING} img[alt][role="img"]:not(${BODY} *),${READING} [data-testid="persona-coin"]:not(${BODY} *),${READING} .fui-Avatar:not(${BODY} *){display:none!important}`);
       out.push(`${WELL}{flex-direction:row!important;flex-wrap:wrap!important;gap:6px!important;font-size:11px!important}`);
       out.push(`${READING} [role="heading"]{font-size:15px!important;line-height:1.25!important;margin:0 0 2px!important}`);
       out.push(`${READING} .fui-MessageBar,${READING} [data-olkt-chip]{display:none!important}`);
@@ -2223,8 +2245,9 @@
       }
     }
     if (p.fit !== 'none') {
-      // The scale itself is measured just before printing; without a measurement it is 1.
-      out.push(`${BODY}{transform:scale(var(--olkt-print-scale,1));transform-origin:top left;width:calc(100% / var(--olkt-print-scale,1))!important}`);
+      // Only when the pass below found something too wide: a transformed box is a single unit
+      // in paged layout, so scaling a message that fits would cost every page after the first.
+      out.push(`[data-olkt-fit] ${BODY}{transform:scale(var(--olkt-print-scale,1));transform-origin:top left;width:calc(100% / var(--olkt-print-scale,1))!important}`);
     }
     out.push('}');
   }
@@ -2237,8 +2260,10 @@
     if (p.fit === 'none') return 1;
     const body = document.querySelector(BODY);
     if (!body) return 1;
-    let widest = body.scrollWidth;
-    for (const e of body.querySelectorAll('table,img,pre,figure')) widest = Math.max(widest, e.scrollWidth || 0);
+    // The body itself is held to the reading width, so measuring it would scale down a
+    // message that fits. What matters is the widest thing inside it.
+    let widest = 0;
+    for (const e of body.querySelectorAll('table,img,pre,figure,div,p')) widest = Math.max(widest, e.scrollWidth || 0);
     if (!widest) return 1;
     if (p.fit === 'overflow' && widest <= PRINT_WIDTH) return 1;
     return Math.max(0.4, Math.min(1, PRINT_WIDTH / widest));
@@ -2246,12 +2271,19 @@
   // A thread's older messages carry no class or id of their own: the history starts at a rule
   // whose next elements are the previous message's "From:" block. Marked here rather than in
   // the stylesheet, so a rule used inside a real message is left alone.
-  const QUOTED_HEAD = /^\s*(from|sent|date|to|subject)\s*:/i;
+  const QUOTED_HEAD = /^\s*from\s*:/i;
+  // Two fields or more: one "Date:" line in a receipt is not a quoted message.
+  const QUOTED_FIELDS = /[\n\r]\s*(sent|date|to|cc|subject)\s*:/gi;
+  const looksQuotedHead = text => {
+    const t = (text || '').trim();
+    return QUOTED_HEAD.test(t) && (t.match(QUOTED_FIELDS) || []).length >= 1;
+  };
   // "+2 others" and the like: the short form of a recipient line, which print would otherwise
   // draw over the full list it stands in for.
   const COLLAPSED = /^\s*\+\s*\d+\s+(others?|more)\b/i;
   function markCollapsed() {
-    const well = document.querySelector(WELL);
+    const pane = document.querySelector(READING);
+    const well = pane && pane.querySelector(WELL);
     if (!well) return;
     for (const e of well.querySelectorAll('*')) {
       if (e.children.length) continue;
@@ -2277,7 +2309,7 @@
         const t = (n.innerText || '').trim();
         if (!t) continue;
         checked++;
-        looks = QUOTED_HEAD.test(t);
+        looks = looksQuotedHead(t);
       }
       if (looks) mark(hr);
     }
@@ -2285,19 +2317,33 @@
     for (const e of body.querySelectorAll('div,p,blockquote,table')) {
       if (e.hasAttribute('data-olkt-quoted') || e === body.firstElementChild) continue;
       const t = (e.innerText || '').trim();
-      if (/^from\s*:/i.test(t) && /[\n\r]\s*(sent|date|to)\s*:/i.test(t)) mark(e);
+      // Only the header block itself, never a wrapper that happens to begin with one: marking
+      // an ancestor would take the whole message with it.
+      if (!looksQuotedHead(t)) continue;
+      if (e.querySelector('div,p,blockquote,table') && t.length > 600) continue;
+      mark(e);
     }
   }
   const clearQuoted = () => document.querySelectorAll('[data-olkt-quoted]').forEach(n => n.removeAttribute('data-olkt-quoted'));
   const onBeforePrint = () => {
     try {
+      // A print that never reported finishing leaves its marks behind.
+      clearQuoted();
+      clearCollapsed();
       if (cfg.print.quoted !== 'show') markQuoted();
       markCollapsed();
-      document.documentElement.style.setProperty('--olkt-print-scale', String(Math.round(printScale() * 1000) / 1000));
+      const scale = printScale();
+      document.documentElement.toggleAttribute('data-olkt-fit', scale < 1);
+      document.documentElement.style.setProperty('--olkt-print-scale', String(Math.round(scale * 1000) / 1000));
     } catch {}
   };
   const onAfterPrint = () => {
-    try { clearQuoted(); clearCollapsed(); document.documentElement.style.removeProperty('--olkt-print-scale'); } catch {}
+    try {
+      clearQuoted();
+      clearCollapsed();
+      document.documentElement.removeAttribute('data-olkt-fit');
+      document.documentElement.style.removeProperty('--olkt-print-scale');
+    } catch {}
   };
 
   function readingCss(out) {

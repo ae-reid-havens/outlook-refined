@@ -1875,10 +1875,6 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     out.push(`.olkt-other-head{flex:none;display:flex;align-items:center;height:38px;padding-left:var(--o-x,67px);background:var(--o-rowbg,#292929);border-bottom:1px solid var(--olkt-ground,#141414)}`);
     out.push(`.olkt-other-head span{position:relative;font-size:14px;line-height:20px;font-weight:600;color:var(--colorNeutralForeground1,#fff)}`);
     out.push(`.olkt-other-head span::after{content:"";position:absolute;left:0;right:0;bottom:-5px;height:3px;border-radius:2px;background:var(--colorBrandStroke1,#479ef5)}`);
-    out.push(`.olkt-other-head .olkt-other-count{position:static;min-width:18px;height:18px;margin-left:8px;padding:0 6px;box-sizing:border-box;border-radius:9px;font-size:11px;line-height:18px;font-weight:700;text-align:center;color:var(--colorNeutralForegroundOnBrand,#fff);background:var(--colorBrandBackground,#0f6cbd)}`);
-    out.push(`.olkt-other-head .olkt-other-count:not([hidden]){display:inline-block}`);
-    out.push(`.olkt-other-head .olkt-other-count[hidden]{display:none}`);
-    out.push(`.olkt-other-head .olkt-other-count::after{content:none}`);
     out.push(`.olkt-other-list{flex:1;min-height:0;overflow-y:auto;background:var(--olkt-ground,#141414)}`);
     out.push(`.olkt-ogrp{display:flex;align-items:center;height:var(--o-gh,25px);padding-left:var(--o-gx,67px);position:relative;background:var(--o-gbg,#141414);font-size:var(--o-gfs,12px);font-weight:600;color:var(--colorNeutralForeground1,#fff);cursor:pointer;user-select:none}`);
     out.push(`.olkt-ogrp svg{position:absolute;left:calc(var(--o-gx,67px) - 28px);width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.4;transition:transform .12s}`);
@@ -1967,24 +1963,28 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     bindOtherGrip(grip);
     const msgs = other && other.messages;
     const head = el('div', 'olkt-other-head');
-    // Unread among the loaded messages ("+" when more are not loaded); hidden at zero.
-    const unread = msgs ? msgs.filter(m => !m.read).length : 0;
-    const count = el('span', 'olkt-other-count', unread ? unread + (other.more ? '+' : '') : '');
-    count.hidden = !unread;
-    count.title = unread ? `${unread}${other.more ? ' or more' : ''} unread` : '';
+    let ourLabel = null, liveLabel = null, tabEl = null;
     if (tpl.tab) {
       // Outlook's own Focused tab, relabeled, at the same spot in a header of the same size.
       const tab = tpl.tab.node.cloneNode(true);
       let label = null;
       for (const s of tab.querySelectorAll('span')) if (s.children.length === 0 && s.textContent.trim() === 'Focused') { s.textContent = 'Other'; label = s; }
-      if (label) label.after(count); else tab.append(count);
       for (const b of tab.querySelectorAll('[role="tab"]')) { b.setAttribute('role', 'presentation'); b.tabIndex = -1; }
-      tab.style.marginLeft = tpl.tab.x + 'px';
+      // Lined up with the live Focused tab rather than the offset measured when the template
+      // was taken: the card sits inside the message column, so that offset counted the
+      // column's own padding a second time.
+      const live = [...document.querySelectorAll('[role="tab"]')].find(t => (t.textContent || '').trim().startsWith('Focused') && t.getBoundingClientRect().height > 0);
+      const from = otherEl.getBoundingClientRect().x;
+      const offset = live && live.parentElement ? Math.round(live.parentElement.getBoundingClientRect().x - from) : tpl.tab.x;
+      tab.style.marginLeft = Math.max(0, offset) + 'px';
+      tabEl = tab;
+      ourLabel = label;
+      liveLabel = live ? [...live.querySelectorAll('span')].find(x => !x.children.length && x.textContent.trim() === 'Focused') || live : null;
       head.classList.add('native');
       head.style.height = tpl.tab.h + 'px';
       if (tpl.tab.bg) head.style.background = tpl.tab.bg;
       head.append(tab);
-    } else head.append(el('span', null, 'Other'), count);
+    } else head.append(el('span', null, 'Other'));
     const list = el('div', 'olkt-other-list');
     if (!other) list.appendChild(el('div', 'olkt-none', 'Loading...'));
     else if (other.error) list.appendChild(el('div', 'olkt-none', 'Other inbox not available for this account'));
@@ -2036,6 +2036,15 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       }
     }
     otherEl.append(grip, head, list);
+    // Line the word up with the word above it, on the next frame: measured in this one the
+    // card has not been laid out yet and every rectangle reads as zero.
+    if (tabEl && ourLabel && liveLabel) requestAnimationFrame(() => {
+      if (!current() || !ourLabel.isConnected || !liveLabel.isConnected) return;
+      const drift = Math.round(liveLabel.getBoundingClientRect().x - ourLabel.getBoundingClientRect().x);
+      if (!drift) return;
+      const margin = parseFloat(tabEl.style.marginLeft) || 0;
+      tabEl.style.marginLeft = Math.max(0, Math.round(margin + drift)) + 'px';
+    });
     list.scrollTop = keepScroll;
     // Unless dragged, the section is as tall as its messages (the rows' own heights, since the
     // list stretches to fill whatever height it has), up to 45% of the column.

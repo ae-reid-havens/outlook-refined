@@ -367,6 +367,8 @@
     out.push(`.olkt-ev{display:grid;grid-template-columns:3px 1fr auto;gap:1px 8px;align-items:center;margin:4px 0 0 12px;line-height:1.3}`);
     out.push(`.olkt-ev::before{content:"";grid-row:1 / span 2;align-self:stretch;border-radius:2px;background:var(--olkt-ev-color,#4aa3f0)}`);
     out.push(`.olkt-ev b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;grid-column:2}`);
+    out.push(`.olkt-repwrap{display:inline-flex;vertical-align:-2px;margin-right:4px;color:var(--colorNeutralForeground3,#a3a3a3)}`);
+    out.push(`.olkt-rep{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}`);
     out.push(`.olkt-charm{display:inline-block;width:13px;height:13px;margin-right:5px;vertical-align:-2px;background:currentColor;-webkit-mask:var(--olkt-charm) center/contain no-repeat;mask:var(--olkt-charm) center/contain no-repeat}`);
     out.push(`.olkt-ev small{grid-column:2;color:var(--colorNeutralForeground3,#a3a3a3);font-size:11px;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`);
     out.push(`.olkt-ev.free b{font-weight:400;color:var(--colorNeutralForeground2,#c8c8c8)}`);
@@ -720,7 +722,7 @@
     const res = await session.call(acct.anchor, action, JSON.stringify({ __type: action + 'JsonRequest:#Exchange', Header: OWA_HEADER, Body: body }), ++owaCount);
     if (!res.ok) throw new Error(action + ' failed (' + res.status + ')');
     const json = await res.json();
-    const out = json && json.Body;
+    const out = (json && json.Body) || json;
     if (!out) throw new Error(action + ': empty reply');
     const msg = out.ResponseMessages && out.ResponseMessages.Items ? out.ResponseMessages.Items[0] : out;
     if (!multi && msg && msg.ResponseClass && msg.ResponseClass !== 'Success') throw new Error(action + ': ' + (msg.MessageText || msg.ResponseCode || msg.ResponseClass));
@@ -770,11 +772,35 @@
     return undefined;
   }
   const joinIn = (...texts) => { for (const t of texts) { const j = meetingLink(t); if (j) return j; } return undefined; };
-  const CAL_PROPS = ['calendar:IsAllDayEvent', 'calendar:IsCancelled', 'calendar:IsSeriesCancelled', 'calendar:Location', 'calendar:IsOnlineMeeting', 'calendar:JoinOnlineMeetingUrl', 'calendar:StartWallClock', 'calendar:EndWallClock', 'item:Categories', 'item:Preview', 'calendar:Charm', 'calendar:UID'].map(PROP);
+  const calendarCache = new Map(); // address -> { byFolder, fallback, at }
+  const CAL_COLOR_TTL = 1800000;
+  async function calendarColors(acct) {
+    const cached = calendarCache.get(acct.address);
+    if (cached && Date.now() - cached.at < CAL_COLOR_TTL) return cached;
+    const j = await owa(acct, 'GetCalendarFolders', {});
+    const byFolder = new Map();
+    let fallback = '';
+    for (const g of j.CalendarGroups || []) {
+      for (const c of g.Calendars || []) {
+        const id = c.CalendarFolderId && c.CalendarFolderId.Id;
+        const hex = String(c.HexColorString || '');
+        if (!/^#[0-9a-f]{6}$/i.test(hex) || hex === '#000000') continue;
+        if (id) byFolder.set(id, hex);
+        if (c.IsDefaultCalendar) fallback = hex;
+      }
+    }
+    const rec = { byFolder, fallback, at: Date.now() };
+    calendarCache.set(acct.address, rec);
+    return rec;
+  }
+
+  const CAL_PROPS = ['calendar:IsAllDayEvent', 'calendar:IsCancelled', 'calendar:IsSeriesCancelled', 'calendar:Location', 'calendar:IsOnlineMeeting', 'calendar:JoinOnlineMeetingUrl', 'calendar:StartWallClock', 'calendar:EndWallClock', 'item:Categories', 'item:Preview', 'calendar:Charm', 'calendar:UID', 'item:ParentFolderId'].map(PROP);
   const dateOnly = s => String(s).slice(0, 10) + 'T00:00:00Z'; // all-day events: the item's own date
   const instant = s => new Date(s).toISOString();
   // One account's events between from and to (occurrences expanded), as the agenda draws them.
   async function readAccount(acct, from, to, joinsUntil) {
+    // Outlook colours an event by its calendar; a failure here only costs the colours.
+    const colors = await calendarColors(acct).catch(() => null);
     const found = await owa(acct, 'FindItem', { ItemShape: { __type: 'ItemResponseShape:#Exchange', BaseShape: 'Default', AdditionalProperties: CAL_PROPS }, ParentFolderIds: [{ __type: 'DistinguishedFolderId:#Exchange', Id: 'calendar' }], Traversal: 'Shallow', Paging: { __type: 'CalendarPageView:#Exchange', StartDate: from.toISOString(), EndDate: to.toISOString() } });
     const msg = found.ResponseMessages && found.ResponseMessages.Items && found.ResponseMessages.Items[0];
     const root = msg && msg.RootFolder;
@@ -790,7 +816,9 @@
         subject: i.Subject || '(no title)',
         start: allDay ? dateOnly(i.StartWallClock || i.Start) : instant(i.Start),
         end: allDay ? dateOnly(i.EndWallClock || i.End) : instant(i.End),
-        allDay, free: i.FreeBusyType === 'Free', account: acct.address, label: acct.label, color: acct.color,
+        allDay, free: i.FreeBusyType === 'Free', account: acct.address, label: acct.label,
+        color: (colors && (colors.byFolder.get(i.ParentFolderId && i.ParentFolderId.Id) || colors.fallback)) || acct.color,
+        repeating: i.CalendarItemType === 'Occurrence' || i.CalendarItemType === 'Exception',
         categories: i.Categories && i.Categories.length ? i.Categories : undefined,
         where: meetingLink(place) || /^microsoft teams meeting$/i.test(place) ? '' : place,
         charm: i.Charm && i.Charm !== 'None' ? String(i.Charm).toLowerCase() : undefined,
@@ -1024,6 +1052,19 @@
       : carried ? (end > nextDay(d) ? 'Continues' : `Until ${fmtTime(end)}`)
       : `${fmtTime(start)} · ${duration(end - start)}`;
     const title = el('b', null, e.subject);
+    if (e.repeating) {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 16 16');
+      svg.setAttribute('class', 'olkt-rep');
+      const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      // A loop with an arrow head, the way Outlook draws a repeating event.
+      p.setAttribute('d', 'M4 6.5a4 4 0 0 1 6.9-2.2M12 9.5a4 4 0 0 1-6.9 2.2M10.4 4.3h2.2V2.1M5.6 11.7H3.4v2.2');
+      svg.appendChild(p);
+      const wrap = el('span', 'olkt-repwrap');
+      wrap.title = 'Repeating event';
+      wrap.appendChild(svg);
+      title.prepend(wrap);
+    }
     if (e.charm) {
       const icon = el('span', 'olkt-charm');
       icon.style.setProperty('--olkt-charm', 'url("' + CHARM_URL + e.charm + '.svg")');

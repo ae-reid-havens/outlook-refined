@@ -186,10 +186,11 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // the session Outlook is already signed in to. The headers stay inside this closure: the
   // store only says which mailboxes it holds and sends requests on their behalf. Nothing
   // is stored or logged, and removing the mod leaves the wrappers idle.
-  const SESSION_V = 4;
+  const SESSION_V = 5;
   const session = (window.__olktSession && window.__olktSession.v === SESSION_V) ? window.__olktSession : (window.__olktSession = (() => {
     const byAnchor = new Map(); // x-anchormailbox -> { base, headers, at }
     const byCategory = new Map(); // x-anchormailbox (or '*') -> Map(category name -> colour index)
+    const asked = new Set(); // mailboxes whose palette has been asked for, so it is asked once
     const KEEP = ['authorization', 'x-owa-sessionid', 'x-client-version', 'x-tenantid', 'prefer', 'x-owa-hosted-ux', 'x-req-source'];
     const listeners = new Set();
     const entries = src => {
@@ -259,6 +260,20 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       anchors: () => [...byAnchor.keys()],
       on: fn => listeners.add(fn),
       off: fn => listeners.delete(fn),
+      // Ask for the startup payload once, for its category palette, when Outlook loaded it
+      // somewhere this page could not watch. Resolves to how many categories it found.
+      async palettes(anchor) {
+        const e = byAnchor.get(anchor);
+        if (!e || byCategory.has(anchor) || asked.has(anchor)) return 0;
+        asked.add(anchor);
+        const headers = { ...e.headers, 'x-anchormailbox': anchor, 'content-type': 'application/json; charset=utf-8', 'x-owa-actionsource': 'OutlookRefined' };
+        const url = new URL(e.base).origin + '/owa/startupdata.ashx?app=Mail&n=1';
+        const res = await nativeFetch.call(window, url, { method: 'POST', headers, body: '{}' });
+        if (!res.ok) throw new Error('startup payload: ' + res.status);
+        readPalette(anchor, await res.text());
+        const got = byCategory.get(anchor);
+        return got ? got.size : 0;
+      },
       // One service call on a mailbox's behalf, with the headers kept for it, to the same
       // service host Outlook used. body is the JSON text to post; resolves to the Response.
       call(anchor, action, body, n) {
@@ -1041,6 +1056,10 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       if (!e.join && joinsUntil && e.id && !allDay && (i.IsOnlineMeeting || /teams|zoom|webex|meet\b/i.test(place))
         && new Date(e.start) < joinsUntil && new Date(e.end) > now) bodies.push(e);
       events.push(e);
+    }
+    if (!session.palette(acct.anchor) && events.some(e => e.categories && e.categories.length)) {
+      // The next read paints them; this one keeps the calendar colours it already has.
+      session.palettes(acct.anchor).then(n => { if (n && current()) ensureAgendaData(true); }, () => {});
     }
     if (bodies.length) {
       // The invite text holds the link when the field above is empty (most Teams invites).
@@ -2700,6 +2719,13 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     });
   });
 
+  // A resize can leave Outlook's own list rebuilt with nothing of ours in it, and the
+  // mutations that did it are the kind we skip, so the pane is rebuilt here instead.
+  let resizeTimer = 0;
+  const onResize = () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (current()) render(); }, 250);
+  };
   const onDocPointer = ev => { if (!ev.target.closest('.olkt-menu, .olkt-rename')) closeMenus(); };
   const onDocKey = ev => { if (ev.key === 'Escape') closeMenus(); };
 
@@ -2711,6 +2737,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     document.addEventListener('keydown', onDocKey, true);
     document.addEventListener('keydown', onWellKey, true);
     window.addEventListener('storage', onStorage);
+    window.addEventListener('resize', onResize);
     window.addEventListener('beforeprint', onBeforePrint);
     window.addEventListener('afterprint', onAfterPrint);
   }
@@ -2724,6 +2751,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       document.removeEventListener('keydown', onDocKey, true);
       document.removeEventListener('keydown', onWellKey, true);
       window.removeEventListener('storage', onStorage);
+      window.removeEventListener('resize', onResize);
+      clearTimeout(resizeTimer);
       window.removeEventListener('beforeprint', onBeforePrint);
       window.removeEventListener('afterprint', onAfterPrint);
       onAfterPrint();

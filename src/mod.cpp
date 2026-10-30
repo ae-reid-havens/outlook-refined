@@ -6,6 +6,8 @@
 // @author          Analytic Endeavors (Reid Havens)
 // @github          https://github.com/ae-reid-havens
 // @include         olk.exe
+// @architecture    x86-64
+// @license         MIT
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==

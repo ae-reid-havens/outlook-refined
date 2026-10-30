@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              outlook-refined
 // @name            Outlook Refined
-// @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane
-// @version         0.2
+// @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane, and a print layout
+// @version         0.3
 // @author          Analytic Endeavors (Reid Havens)
 // @github          https://github.com/ae-reid-havens
 // @include         olk.exe
@@ -37,6 +37,11 @@ event tiles, overlapping events cascaded or merged.
 
 **Reading pane:** To and Cc on one line, a compact blocked-content bar, a
 readable body width. **Ribbon:** the group-name row under the buttons goes.
+
+**Print:** printing a message prints the message, not the whole window: the
+panes, ribbon and buttons go, panes that scroll are released so nothing is cut
+off, quoted replies can be lightened or dropped, pictures and tables are kept
+whole, and anything too wide for the page is scaled down to fit.
 */
 // ==/WindhawkModReadme==
 
@@ -118,6 +123,24 @@ readable body width. **Ribbon:** the group-name row under the buttons goes.
   $description: A CSS width such as 90ch or 800px. Empty for Outlook's own
 - hideRibbonGroupLabels: true
   $name: Ribbon, hide group names
+- printCompactHeader: true
+  $name: Print, compact header
+  $description: Drops the avatar and action buttons and tightens the sender block, so more of the message fits the first page
+- printFit: overflow
+  $name: Print, fit to the page width
+  $options:
+  - none: Never
+  - overflow: Only when the message is too wide
+  - always: Always
+- printKeepChartsWhole: true
+  $name: Print, keep pictures and tables whole
+  $description: Never split a picture, table or code block across two pages
+- printQuotedReplies: lighten
+  $name: Print, quoted replies
+  $options:
+  - show: Print them as they are
+  - lighten: Print them smaller and grey
+  - hide: Leave them out
 */
 // ==/WindhawkModSettings==
 
@@ -252,6 +275,10 @@ void BuildScript() {
     AddBool(json, L"blockedContentChip");
     AddString(json, L"readingWidth");
     AddBool(json, L"hideRibbonGroupLabels");
+    AddBool(json, L"printCompactHeader");
+    AddString(json, L"printFit");
+    AddBool(json, L"printKeepChartsWhole");
+    AddString(json, L"printQuotedReplies");
     json += L"}";
     std::wstring script = L"{\nconst OLKT_CONFIG = " + json + L";\n" + kPageScript + L"\n}";
     AcquireSRWLockExclusive(&g_scriptLock);

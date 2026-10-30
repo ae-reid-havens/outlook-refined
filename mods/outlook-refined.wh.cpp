@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              outlook-refined
 // @name            Outlook Refined
-// @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane
-// @version         0.2
+// @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane, and a print layout
+// @version         0.3
 // @author          Analytic Endeavors (Reid Havens)
 // @github          https://github.com/ae-reid-havens
 // @include         olk.exe
@@ -37,6 +37,11 @@ event tiles, overlapping events cascaded or merged.
 
 **Reading pane:** To and Cc on one line, a compact blocked-content bar, a
 readable body width. **Ribbon:** the group-name row under the buttons goes.
+
+**Print:** printing a message prints the message, not the whole window: the
+panes, ribbon and buttons go, panes that scroll are released so nothing is cut
+off, quoted replies can be lightened or dropped, pictures and tables are kept
+whole, and anything too wide for the page is scaled down to fit.
 */
 // ==/WindhawkModReadme==
 
@@ -118,6 +123,24 @@ readable body width. **Ribbon:** the group-name row under the buttons goes.
   $description: A CSS width such as 90ch or 800px. Empty for Outlook's own
 - hideRibbonGroupLabels: true
   $name: Ribbon, hide group names
+- printCompactHeader: true
+  $name: Print, compact header
+  $description: Drops the avatar and action buttons and tightens the sender block, so more of the message fits the first page
+- printFit: overflow
+  $name: Print, fit to the page width
+  $options:
+  - none: Never
+  - overflow: Only when the message is too wide
+  - always: Always
+- printKeepChartsWhole: true
+  $name: Print, keep pictures and tables whole
+  $description: Never split a picture, table or code block across two pages
+- printQuotedReplies: lighten
+  $name: Print, quoted replies
+  $options:
+  - show: Print them as they are
+  - lighten: Print them smaller and grey
+  - hide: Leave them out
 */
 // ==/WindhawkModSettings==
 
@@ -272,6 +295,12 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     agendaDays: Math.max(1, Math.min(14, Number(S.agendaDays) || 3)),
     monthHeatMap: S.monthHeatMap !== false,
     otherCard: !!S.otherCard,
+    print: {
+      compactHeader: S.printCompactHeader !== false,
+      fit: ['none', 'overflow', 'always'].includes(S.printFit) ? S.printFit : 'overflow',
+      keepWhole: S.printKeepChartsWhole !== false,
+      quoted: ['show', 'lighten', 'hide'].includes(S.printQuotedReplies) ? S.printQuotedReplies : 'lighten',
+    },
   };
   // Folders with no "(address)" suffix belong to the primary account. Outlook lists
   // the primary account's tree first, so its root names it; the setting overrides.
@@ -525,6 +554,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     out.push(`.olkt-rename{position:fixed;z-index:100001;box-sizing:border-box;font:inherit;font-size:13px;padding:2px 6px;color:var(--colorNeutralForeground1,#e6e6e6);background:var(--colorNeutralBackground3,#1f1f1f);border:1px solid var(--colorBrandStroke1,#4aa3f0);border-radius:4px;outline:none}`);
     calendarCss(out);
     readingCss(out);
+    printCss(out);
     otherCss(out);
     // Ribbon: drop the group-name row (New, Delete, Respond...) under the buttons.
     // Every ribbon container has a fixed height (92px inside, 100px outside); take the
@@ -2200,6 +2230,117 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // To and Cc share one line (click it for the full list); the blocked-content bar shrinks
   // to a chip with its two buttons; the body stops at about 90 characters a line.
   const WELL = '[data-testid="RecipientWell"]';
+  // ==== print ====
+  // Outlook prints the page itself (Ctrl+P goes straight to the browser's print view), so
+  // print is a stylesheet: everything but the open message is hidden, the panes that scroll
+  // are released so the whole message prints, and the message is laid out for paper.
+  const READING = '[role="main"][aria-label="Reading Pane"]';
+  const BODY = '[role="document"][aria-label="Message body"]';
+  // A4 and Letter are both at least 8.27in wide; 7.3in of that is printable at the usual
+  // half-inch margins, which is 700px at the 96dpi CSS inch.
+  const PRINT_WIDTH = 700;
+  function printCss(out) {
+    const p = cfg.print;
+    out.push('@media print{');
+    // Hidden, not removed: Outlook's layout assumes its panes exist.
+    out.push(`body *{visibility:hidden!important}`);
+    out.push(`${READING},${READING} *{visibility:visible!important}`);
+    out.push(`${READING}{position:absolute!important;left:0!important;top:0!important;width:100%!important;max-width:none!important;height:auto!important;overflow:visible!important}`);
+    // Every scroller and fixed height between the pane and the message body, or only the
+    // part that happens to be on screen reaches the paper.
+    out.push(`${READING} *{height:auto!important;max-height:none!important;overflow:visible!important}`);
+    out.push(`${BODY}{max-width:none!important;width:auto!important}`);
+    // Nothing interactive belongs on paper, except the recipients: Outlook draws the whole
+    // To and Cc line as one button, so the well is exempt or the names leave with it.
+    out.push(`${READING} [role="toolbar"],${READING} [role="menubar"],${READING} input,${READING} textarea{display:none!important}`);
+    out.push(`${READING} button:not(${WELL}):not(${WELL} button),${READING} [role="button"]:not(${WELL}):not(${WELL} [role="button"]){display:none!important}`);
+    out.push(`.olkt-agenda,.olkt-other,.olkt-other-toggle,.olkt-compose,.olkt-head,.olkt-resize{display:none!important}`);
+    // Paper is white. Under a dark theme Outlook rewrites the message with inline
+    // `color: ... !important`, which no stylesheet can outrank, so the text is painted black
+    // through its fill colour, which those inline rules do not set.
+    out.push(`${READING}{background:#fff!important}`);
+    out.push(`${READING} *{background-color:transparent!important;box-shadow:none!important}`);
+    out.push(`${READING},${READING} *{color:#000!important;-webkit-text-fill-color:#000!important}`);
+    out.push(`${BODY} a{text-decoration:underline}`);
+    if (p.compactHeader) {
+      // The sender block, its avatar and the chips above the message take a third of page one.
+      out.push(`${READING} img[alt][role="img"],${READING} [data-testid="persona-coin"],${READING} .fui-Avatar{display:none!important}`);
+      out.push(`${WELL}{flex-direction:row!important;flex-wrap:wrap!important;gap:6px!important;font-size:11px!important}`);
+      out.push(`${READING} [role="heading"]{font-size:15px!important;line-height:1.25!important;margin:0 0 2px!important}`);
+      out.push(`${READING} .fui-MessageBar,${READING} [data-olkt-chip]{display:none!important}`);
+    }
+    if (p.keepWhole) out.push(`${BODY} img,${BODY} table,${BODY} figure,${BODY} svg,${BODY} pre{break-inside:avoid;page-break-inside:avoid;max-width:100%!important}`);
+    if (p.quoted !== 'show') {
+      // Each form repeats the pane, because the black fill above outranks a bare attribute.
+      const parts = [`${READING} [data-olkt-quoted]`, `${BODY} blockquote`, `${BODY} #divRplyFwdMsg`, `${BODY} #divRplyFwdMsg ~ *`, `${BODY} [id^="appendonsend"]`, `${BODY} .OutlookMessageHeader`, `${BODY} .gmail_quote`];
+      const quoted = parts.join(',');
+      if (p.quoted === 'hide') out.push(`${quoted}{display:none!important}`);
+      else {
+        // The text itself sits in descendants, and each one needs its own selector: a list
+        // followed by " *" would only reach the children of its last entry.
+        out.push(`${parts.concat(parts.map(x => x + ' *')).join(',')}{color:#666!important;-webkit-text-fill-color:#666!important}`);
+        out.push(`${quoted}{font-size:97%!important}`);
+      }
+    }
+    if (p.fit !== 'none') {
+      // The scale itself is measured just before printing; without a measurement it is 1.
+      out.push(`${BODY}{transform:scale(var(--olkt-print-scale,1));transform-origin:top left;width:calc(100% / var(--olkt-print-scale,1))!important}`);
+    }
+    out.push('}');
+  }
+
+  // Just before the print view renders, measure the widest thing in the message and, when it
+  // cannot fit the page, scale the body down so a receipt or a fixed-width table arrives whole
+  // instead of cropped. 'always' fits every message to the page width.
+  function printScale() {
+    const p = cfg.print;
+    if (p.fit === 'none') return 1;
+    const body = document.querySelector(BODY);
+    if (!body) return 1;
+    let widest = body.scrollWidth;
+    for (const e of body.querySelectorAll('table,img,pre,figure')) widest = Math.max(widest, e.scrollWidth || 0);
+    if (!widest) return 1;
+    if (p.fit === 'overflow' && widest <= PRINT_WIDTH) return 1;
+    return Math.max(0.4, Math.min(1, PRINT_WIDTH / widest));
+  }
+  // A thread's older messages carry no class or id of their own: the history starts at a rule
+  // whose next elements are the previous message's "From:" block. Marked here rather than in
+  // the stylesheet, so a rule used inside a real message is left alone.
+  const QUOTED_HEAD = /^\s*(from|sent|date|to|subject)\s*:/i;
+  function markQuoted() {
+    const body = document.querySelector(BODY);
+    if (!body) return;
+    const mark = from => { for (let n = from; n; n = n.nextElementSibling) n.setAttribute('data-olkt-quoted', ''); };
+    // A rule followed by the previous message's header. Spacer nodes carry no text and sit
+    // between the two in most threads, so they are stepped over rather than counted.
+    for (const hr of body.querySelectorAll('hr')) {
+      let looks = false, checked = 0;
+      for (let n = hr.nextElementSibling; n && checked < 4 && !looks; n = n.nextElementSibling) {
+        const t = (n.innerText || '').trim();
+        if (!t) continue;
+        checked++;
+        looks = QUOTED_HEAD.test(t);
+      }
+      if (looks) mark(hr);
+    }
+    // Or the header block itself, for a thread that separates with spacing instead of a rule.
+    for (const e of body.querySelectorAll('div,p,blockquote,table')) {
+      if (e.hasAttribute('data-olkt-quoted') || e === body.firstElementChild) continue;
+      const t = (e.innerText || '').trim();
+      if (/^from\s*:/i.test(t) && /[\n\r]\s*(sent|date|to)\s*:/i.test(t)) mark(e);
+    }
+  }
+  const clearQuoted = () => document.querySelectorAll('[data-olkt-quoted]').forEach(n => n.removeAttribute('data-olkt-quoted'));
+  const onBeforePrint = () => {
+    try {
+      if (cfg.print.quoted !== 'show') markQuoted();
+      document.documentElement.style.setProperty('--olkt-print-scale', String(Math.round(printScale() * 1000) / 1000));
+    } catch {}
+  };
+  const onAfterPrint = () => {
+    try { clearQuoted(); document.documentElement.style.removeProperty('--olkt-print-scale'); } catch {}
+  };
+
   function readingCss(out) {
     if (S.oneLineRecipients) {
       out.push(`${WELL}:not([data-olkt-open]){flex-direction:row!important;flex-wrap:nowrap!important;gap:14px;overflow:hidden;cursor:pointer}`);
@@ -2458,6 +2599,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     document.addEventListener('keydown', onDocKey, true);
     document.addEventListener('keydown', onWellKey, true);
     window.addEventListener('storage', onStorage);
+    window.addEventListener('beforeprint', onBeforePrint);
+    window.addEventListener('afterprint', onAfterPrint);
   }
 
   window.__olkt = {
@@ -2469,6 +2612,9 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       document.removeEventListener('keydown', onDocKey, true);
       document.removeEventListener('keydown', onWellKey, true);
       window.removeEventListener('storage', onStorage);
+      window.removeEventListener('beforeprint', onBeforePrint);
+      window.removeEventListener('afterprint', onAfterPrint);
+      onAfterPrint();
       session.off(onSession);
       clearTimeout(sessionTimer);
       if (boundList) unbindList(boundList);
@@ -2477,7 +2623,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       document.querySelectorAll(`${PANE} .customScrollBar`).forEach(n => { n.style.paddingBottom = ''; n.style.maxHeight = ''; });
       document.querySelectorAll(OURS).forEach(n => n.remove());
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));
-      for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));
+      for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked', 'data-olkt-quoted'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));
       delete window.__olkt;
       return 'removed';
     },
@@ -2594,6 +2740,10 @@ void BuildScript() {
     AddBool(json, L"blockedContentChip");
     AddString(json, L"readingWidth");
     AddBool(json, L"hideRibbonGroupLabels");
+    AddBool(json, L"printCompactHeader");
+    AddString(json, L"printFit");
+    AddBool(json, L"printKeepChartsWhole");
+    AddString(json, L"printQuotedReplies");
     json += L"}";
     std::wstring script = L"{\nconst OLKT_CONFIG = " + json + L";\n" + kPageScript + L"\n}";
     AcquireSRWLockExclusive(&g_scriptLock);

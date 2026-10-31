@@ -123,8 +123,11 @@ Other Outlook windows that are already open pick up such a change when they are 
 ## Privacy
 
 The mod runs only inside Outlook's own pages: the script checks the host first and stops at
-once anywhere else, so an add-in dialog on a third-party site is left untouched. It reads
-nothing from disk, opens no ports, fetches nothing from the network and collects nothing.
+once anywhere else, so an add-in dialog on a third-party site is left untouched. It opens no
+ports, collects nothing, and brings nothing of its own down from the network: every asset it
+draws with is in the mod file. It reads your account addresses from Outlook's own storage, to
+label the folder tree, and with the agenda, month grid or Other card on it calls Outlook's mail
+service as described below. With those three off it makes no request at all.
 
 The agenda, the month grid and the Other inbox card need your calendar and your inbox, and they
 get them from Outlook's own mail service, the same one the window beside them is already using.

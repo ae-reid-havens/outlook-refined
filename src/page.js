@@ -18,7 +18,7 @@
   // per mailbox, so the agenda, month grid and Other card can ask that same service with
   // the session Outlook is already signed in to. The headers stay inside this closure: the
   // store only says which mailboxes it holds and sends requests on their behalf. Nothing
-  // is stored or logged, and removing the mod leaves the wrappers idle.
+  // is stored or logged, and disabling the mod puts fetch and XHR back as they were.
   const SESSION_V = 5;
   const session = (window.__olktSession && window.__olktSession.v === SESSION_V) ? window.__olktSession : (window.__olktSession = (() => {
     const byAnchor = new Map(); // x-anchormailbox -> { base, headers, at }
@@ -36,7 +36,11 @@
     // Outlook addresses its own service with a relative URL as often as an absolute one, so
     // the address is resolved against the page before it is matched. The service's own base
     // is kept per mailbox, so each one is asked on the host Outlook itself used.
+    // Set by stop(). Outlook code that kept its own reference to the old fetch keeps
+    // calling the wrapper, so the wrapper itself has to go quiet, not just be unhooked.
+    let stopped = false;
     const note = (url, headers) => {
+      if (stopped) return;
       let u;
       try { u = new URL(url, location.href); } catch { return; }
       if (u.protocol !== 'https:' || !u.pathname.includes('/owa/') || !/\/service\.svc$/.test(u.pathname) || !u.searchParams.get('action')) return;
@@ -55,6 +59,7 @@
     // rather than by parsing the whole payload, which is large and none of our business.
     const CATEGORY = /\{"Name":"((?:[^"\\]|\\.)*)","Color":(-?\d+),"Id":"/g;
     const readPalette = (anchor, text) => {
+      if (stopped) return;
       const map = new Map();
       for (const m of text.matchAll(CATEGORY)) {
         let name = m[1];
@@ -98,6 +103,7 @@
       // drops every header the store holds. Only restores what is still ours, so a
       // wrapper another extension added after ours stays in place.
       stop() {
+        stopped = true;
         if (window.fetch === wrappedFetch) window.fetch = nativeFetch;
         if (X.open === wrappedOpen) X.open = open;
         if (X.setRequestHeader === wrappedSetHeader) X.setRequestHeader = setHeader;
@@ -143,8 +149,8 @@
       },
     };
   })());
-  // Each install replaces the previous one. Older copies (for example from an
-  // injector that was restarted) see a newer generation and shut themselves down.
+  // Each install replaces the previous one: an older copy, left by a window that was
+  // already open, sees a newer generation and shuts itself down.
   if (window.__olkt) window.__olkt.remove();
   const gen = window.__olktGen = (window.__olktGen || 0) + 1;
   const current = () => window.__olktGen === gen;
@@ -157,32 +163,55 @@
   const ACCOUNT_ORDER_KEY = 'olkt-account-order';
   // Static choices come from the mod's settings. Edits made inside Outlook (groups,
   // renames, folds, account order, pane and card sizes) belong to the mod rather than to
-  // Outlook, so they live in Windhawk's own storage: the mod hands them in through
-  // OLKT_CONFIG.store and takes each write back over the WebView's message channel.
-  // Nothing of ours is left in Outlook's profile when the mod goes.
+  // Outlook, so they live in Windhawk's own storage: this script asks for them over the
+  // WebView's message channel and sends each change back the same way. Nothing of ours
+  // is left in Outlook's profile when the mod goes.
   const S = OLKT_CONFIG;
   const STORE_KEYS = [FOLD_KEY, WIDTH_KEY, FAVORITES_KEY, ACCOUNT_ORDER_KEY, 'olkt-agenda-height', 'olkt-other-height', 'olkt-other-split', 'olkt-other-folds'];
   const store = (() => {
-    const mem = new Map(Object.entries(S.store || {}));
-    // One line each: the marker, the key, then the value, with an empty value meaning
-    // delete. Outlook's own handler reads its messages as JSON and ignores this shape.
-    const post = (key, value) => {
-      try { window.chrome.webview.postMessage('olkt-store\n' + key + '\n' + (value == null ? '' : value)); } catch {}
-    };
-    // State an earlier version wrote into Outlook's localStorage moves across once, so
-    // favorites and sizes survive the change and Outlook's profile is left clean.
-    for (const key of STORE_KEYS) {
-      try {
-        const old = localStorage.getItem(key);
-        if (old == null) continue;
-        if (!mem.has(key)) { mem.set(key, old); post(key, old); }
-        localStorage.removeItem(key);
-      } catch {}
-    }
+    const mem = new Map();
+    const channel = (() => { try { return window.chrome.webview; } catch { return null; } })();
+    // Every message carries the key the mod put in this script. A page in another
+    // WebView, an add-in dialog for instance, shares the message channel but never sees
+    // the script, so it cannot ask for the state or change it.
+    const post = text => { try { channel.postMessage(text); } catch {} };
+    let loaded = false;
+    let onMessage = null;
+    // The state is asked for rather than baked into this script: a window that reloads
+    // then starts from what is saved now, not from what was saved when it opened.
+    const ready = new Promise(resolve => {
+      if (!channel || !S.key) { resolve(false); return; }
+      onMessage = ev => {
+        const text = typeof ev.data === 'string' ? ev.data : '';
+        if (!text.startsWith('olkt-state\n')) return;
+        try {
+          const saved = JSON.parse(text.slice('olkt-state\n'.length));
+          for (const key of STORE_KEYS) if (typeof saved[key] === 'string') mem.set(key, saved[key]);
+        } catch {}
+        loaded = true;
+        resolve(true);
+      };
+      channel.addEventListener('message', onMessage);
+      post('olkt-get\n' + S.key);
+      // No answer: draw with the defaults rather than hold the pane back. Writes stay
+      // shut until an answer arrives, so nothing saved can be overwritten unread.
+      setTimeout(() => resolve(false), 1500);
+    });
     return {
+      ready,
+      loaded: () => loaded,
       getItem: key => (mem.has(key) ? mem.get(key) : null),
-      setItem: (key, value) => { mem.set(key, String(value)); post(key, String(value)); },
-      removeItem: key => { mem.delete(key); post(key, null); },
+      setItem: (key, value) => {
+        if (!loaded) return;
+        mem.set(key, String(value));
+        post('olkt-set\n' + S.key + '\n' + key + '\n' + String(value));
+      },
+      removeItem: key => {
+        if (!loaded) return;
+        mem.delete(key);
+        post('olkt-set\n' + S.key + '\n' + key + '\n');
+      },
+      stop() { if (channel && onMessage) { channel.removeEventListener('message', onMessage); onMessage = null; } },
     };
   })();
   const stored = (key, fallback) => { try { const v = JSON.parse(store.getItem(key)); return Array.isArray(v) ? v : fallback; } catch { return fallback; } };
@@ -335,7 +364,7 @@
   const matchesAnyGroup = name => groups().some(({ n: g }) => g.match && pattern(g.match).test(name));
 
   function save() {
-    // Per PC, on Outlook's origin; other open windows pick it up when they next start.
+    // Saved by the mod, per PC; other open Outlook windows read it when they next start.
     try {
       if (S.favoritesGroups) store.setItem(FAVORITES_KEY, JSON.stringify(cfg.favorites));
       store.setItem(ACCOUNT_ORDER_KEY, JSON.stringify(Object.keys(cfg.accounts)));
@@ -1222,8 +1251,8 @@
   const ym = d => ymd(d).slice(0, 7);
 
   // One request in flight per month (a failed one may retry after a minute), and a
-  // cached month is fetched again once it is older than agenda.refreshMinutes; the
-  // cached copy stays on screen meanwhile.
+  // cached month is fetched again once it is older than the agenda's refresh interval;
+  // the cached copy stays on screen meanwhile.
   const monthPending = new Map(); // 'YYYY-MM' -> when it was asked for
   const refreshMs = () => AGENDA_REFRESH;
   function askMonth(key) {
@@ -1657,7 +1686,7 @@
       out.push(`[data-olkt-label]::after{content:attr(data-olkt-label);visibility:visible;position:absolute;left:0;top:0;white-space:nowrap}`);
     }
     if (S.compactTimeZones) {
-      const zw = CAL.zoneWidth || 32;
+      const zw = 32;  // the width Outlook gives a time-zone column once it is compact
       out.push(`[data-olkt-tz]{width:${zw}px!important;min-width:${zw}px!important;max-width:${zw}px!important}`);
       out.push(`time[data-olkt-short]{font-size:0!important}`);
       out.push(`time[data-olkt-short]::after{content:attr(data-olkt-short);font-size:10.5px;font-variant-numeric:tabular-nums}`);
@@ -2686,15 +2715,41 @@
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));
       for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked', 'data-olkt-quoted', 'data-olkt-collapsed'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));
       delete window.__olkt;
+      store.stop();
       if (full) session.stop();
       return 'removed';
     },
-    config: () => cfg,
-    agenda: setAgenda,
-    other: setOther,
-    month: setMonth,
-    refresh: () => { agendaAsked = 0; ensureAgendaData(true); if (otherAccount) askOther(); return 'refreshing'; },
   };
+
+  // Anything read from the saved state at startup is read again once the mod answers,
+  // and the panes are drawn a second time. Values an older version left in Outlook's
+  // own storage move across here, where the answer is already in hand, so a migration
+  // can never overwrite something newer.
+  function applyState() {
+    for (const key of STORE_KEYS) {
+      try {
+        const old = localStorage.getItem(key);
+        if (old == null) continue;
+        if (store.getItem(key) == null) store.setItem(key, old);
+        localStorage.removeItem(key);
+      } catch {}
+    }
+    try { folds = JSON.parse(store.getItem(FOLD_KEY) || '{}') || {}; } catch { folds = {}; }
+    if (S.resizablePane) paneWidth = (Number(store.getItem(WIDTH_KEY)) || 0) || Number(S.paneWidth) || 0;
+    if (S.favoritesGroups) cfg.favorites = stored(FAVORITES_KEY, DEFAULT_FAVORITES);
+    cfg.accounts = orderedAccounts(stored(ACCOUNT_ORDER_KEY, []));
+    agendaHeight = Number(store.getItem(HEIGHT_KEY)) || 0;
+    otherHeight = Number(store.getItem(OTHER_H_KEY)) || 0;
+    otherSplit = store.getItem(OTHER_SPLIT_KEY) !== '0';
+    try { otherFolds = JSON.parse(store.getItem(OTHER_FOLD_KEY) || '{}') || {}; } catch { otherFolds = {}; }
+    if (!current() || !document.body) return 'state applied before start';
+    render();
+    try { renderAgenda(); } catch {}
+    try { renderOther(); } catch {}
+    return 'state applied';
+  }
+  store.ready.then(got => { if (got && current()) applyState(); });
+
   if (document.body) start(); else addEventListener('DOMContentLoaded', start, { once: true });
   return 'installed';
 })()

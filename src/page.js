@@ -36,10 +36,10 @@
     // Outlook addresses its own service with a relative URL as often as an absolute one, so
     // the address is resolved against the page before it is matched. The service's own base
     // is kept per mailbox, so each one is asked on the host Outlook itself used.
-    // Set by stop(). Outlook code that kept its own reference to the old fetch keeps
-    // calling the wrapper, so the wrapper itself has to go quiet, not just be unhooked.
-    let stopped = false;
+    let stopped = false;  // set by stop(); see note() below
     const note = (url, headers) => {
+      // Outlook code that kept its own reference to the old fetch goes on calling the
+      // wrapper after stop() puts the original back, so the wrapper has to go quiet too.
       if (stopped) return;
       let u;
       try { u = new URL(url, location.href); } catch { return; }
@@ -177,29 +177,32 @@
     const post = text => { try { channel.postMessage(text); } catch {} };
     let loaded = false;
     let onMessage = null;
+    let last = '';
     // The state is asked for rather than baked into this script: a window that reloads
-    // then starts from what is saved now, not from what was saved when it opened.
-    const ready = new Promise(resolve => {
-      if (!channel || !S.key) { resolve(false); return; }
+    // then starts from what is saved now, not from what was saved when it opened. The
+    // mod sends it again whenever any window saves, which is how two open windows stay
+    // in step. The pane draws with the defaults meanwhile and redraws when it lands;
+    // writes stay shut until then, so nothing saved is ever overwritten unread, and the
+    // state is taken up here rather than behind a timeout, however late it arrives.
+    if (channel && S.key) {
       onMessage = ev => {
         const text = typeof ev.data === 'string' ? ev.data : '';
         if (!text.startsWith('olkt-state\n')) return;
+        const body = text.slice('olkt-state\n'.length);
+        if (body === last) return;  // nothing changed since the last one; no redraw
+        last = body;
         try {
-          const saved = JSON.parse(text.slice('olkt-state\n'.length));
+          const saved = JSON.parse(body);
+          mem.clear();
           for (const key of STORE_KEYS) if (typeof saved[key] === 'string') mem.set(key, saved[key]);
-        } catch {}
+        } catch { return; }
         loaded = true;
-        resolve(true);
+        try { applyState(); } catch {}
       };
       channel.addEventListener('message', onMessage);
       post('olkt-get\n' + S.key);
-      // No answer: draw with the defaults rather than hold the pane back. Writes stay
-      // shut until an answer arrives, so nothing saved can be overwritten unread.
-      setTimeout(() => resolve(false), 1500);
-    });
+    }
     return {
-      ready,
-      loaded: () => loaded,
       getItem: key => (mem.has(key) ? mem.get(key) : null),
       setItem: (key, value) => {
         if (!loaded) return;
@@ -2725,19 +2728,33 @@
   // and the panes are drawn a second time. Values an older version left in Outlook's
   // own storage move across here, where the answer is already in hand, so a migration
   // can never overwrite something newer.
+  // The folds the code sets up at startup: every group's own `folded`, the accounts
+  // header and the all-day row. A saved map holds only what has been toggled since,
+  // so it goes on top of these rather than in place of them.
+  function foldDefaults(target) {
+    for (const { n } of groups()) if (!(n.id in target)) target[n.id] = !!n.folded;
+    if (!(ACCOUNTS in target)) target[ACCOUNTS] = true;
+    if (!(ALLDAY in target)) target[ALLDAY] = true;
+    return target;
+  }
+
   function applyState() {
+    if (S.favoritesGroups) cfg.favorites = stored(FAVORITES_KEY, DEFAULT_FAVORITES);
+    cfg.accounts = orderedAccounts(stored(ACCOUNT_ORDER_KEY, []));
+    // A value an older version left behind is deleted only once the mod has it: a
+    // write it refuses, for being too large, must not take the last copy with it.
     for (const key of STORE_KEYS) {
       try {
         const old = localStorage.getItem(key);
         if (old == null) continue;
-        if (store.getItem(key) == null) store.setItem(key, old);
-        localStorage.removeItem(key);
+        if (store.getItem(key) === old) localStorage.removeItem(key);
+        else if (store.getItem(key) == null) store.setItem(key, old);
       } catch {}
     }
-    try { folds = JSON.parse(store.getItem(FOLD_KEY) || '{}') || {}; } catch { folds = {}; }
+    let saved = {};
+    try { saved = JSON.parse(store.getItem(FOLD_KEY) || '{}') || {}; } catch {}
+    folds = foldDefaults({ ...saved });
     if (S.resizablePane) paneWidth = (Number(store.getItem(WIDTH_KEY)) || 0) || Number(S.paneWidth) || 0;
-    if (S.favoritesGroups) cfg.favorites = stored(FAVORITES_KEY, DEFAULT_FAVORITES);
-    cfg.accounts = orderedAccounts(stored(ACCOUNT_ORDER_KEY, []));
     agendaHeight = Number(store.getItem(HEIGHT_KEY)) || 0;
     otherHeight = Number(store.getItem(OTHER_H_KEY)) || 0;
     otherSplit = store.getItem(OTHER_SPLIT_KEY) !== '0';
@@ -2748,7 +2765,6 @@
     try { renderOther(); } catch {}
     return 'state applied';
   }
-  store.ready.then(got => { if (got && current()) applyState(); });
 
   if (document.body) start(); else addEventListener('DOMContentLoaded', start, { once: true });
   return 'installed';

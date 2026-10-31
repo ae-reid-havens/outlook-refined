@@ -89,9 +89,9 @@ restart Outlook.
 | Hide "Add account" | off | |
 | Resizable folder pane | on | Drag its right edge; double-click to reset |
 | Folder pane width | 0 | 0 keeps Outlook's width |
-| Agenda | on | The feed under the folder tree |
+| Agenda | off | The feed under the folder tree; reads your calendar through Outlook's session |
 | Agenda days | 3 | Days it lists, today included |
-| Month grid | on | Days shaded by hours booked |
+| Month grid | off | Days shaded by hours booked; same source as the agenda |
 | Other inbox under Focused | off | The Other card below the Focused list |
 | Calendar, one row per account | on | |
 | Calendar pane width | 180 | 0 keeps Outlook's width |
@@ -111,14 +111,20 @@ restart Outlook.
 ## Editing inside Outlook
 
 Groups, renames, folds, account order, pane width and the Other card's on/off state are edited
-in Outlook itself, not in the settings, and are kept in Outlook's own storage on that PC. Drag a
-favorite onto a group header to put it in that group, and Shift+right-click a favorite for its
-menu.
+in Outlook itself, not in the settings. They are saved in Windhawk's own storage for this mod,
+under the names `olkt-favorites`, `olkt-account-order`, `olkt-folds`, `olkt-pane-width`,
+`olkt-agenda-height`, `olkt-other-height`, `olkt-other-split` and `olkt-other-folds`, so removing
+the mod removes them too. Anything an earlier version left in Outlook's local storage is moved
+across the first time this version runs. Drag a favorite onto a group header to put it in that
+group, and Shift+right-click a favorite for its menu.
+
+Other Outlook windows that are already open pick up such a change when they are reopened.
 
 ## Privacy
 
-The mod runs only inside Outlook's own page. It reads nothing from disk, opens no ports and
-collects nothing.
+The mod runs only inside Outlook's own pages: the script checks the host first and stops at
+once anywhere else, so an add-in dialog on a third-party site is left untouched. It reads
+nothing from disk, opens no ports, fetches nothing from the network and collects nothing.
 
 The agenda, the month grid and the Other inbox card need your calendar and your inbox, and they
 get them from Outlook's own mail service, the same one the window beside them is already using.
@@ -127,7 +133,9 @@ mailbox, in the page's memory, and reuses it to ask the same service for the nex
 events or the newest Other conversations. Nothing is stored, written to disk, logged or sent
 anywhere Outlook was not already talking to, no credentials are read or copied, and the headers
 are not reachable from the page: the code that holds them exposes only a method that sends a
-request. Turn the agenda, the month grid and the Other card off and no request is ever made.
+request. All three are off until you turn them on, and with all three off the mod makes no
+request at all. While they are on, the agenda and month grid refresh every five minutes and the
+Other card every two.
 
 ## Known limits
 
@@ -139,14 +147,17 @@ None of these break anything, but each one looks like a bug if it arrives unanno
 - An account's events show up once Outlook has made its first call for that account in this
   session, usually within a few seconds of starting. Until then the agenda says which account it
   is still waiting for.
+- Most tweaks find Outlook's own elements by their English labels ("Focused", "Other",
+  "Navigation pane", "Reading Pane") and read times written as 1:30 PM. In another display
+  language, or with a 24-hour clock, those parts quietly do nothing.
 - Microsoft updates Outlook often. A tweak that leans on something they move will stop working
   on its own, and only that tweak: the mod changes nothing in Outlook itself.
 
 ## Uninstall
 
-Disable the mod in Windhawk and restart Outlook. To clear the choices made inside Outlook as
-well, open the developer tools on Outlook's page and remove the `olkt-` entries from local
-storage.
+Disable the mod in Windhawk. Open Outlook windows give the script back at once: the styling
+goes, the timers stop and Outlook's own fetch is put back, with no restart needed. The choices
+made inside Outlook live in Windhawk's storage for this mod and go when the mod is removed.
 
 ## Credits
 

@@ -2,7 +2,7 @@
 // @id              outlook-refined
 // @name            Outlook Refined
 // @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane, and a print layout
-// @version         0.3
+// @version         0.4
 // @author          Analytic Endeavors
 // @github          https://github.com/ae-reid-havens
 // @include         olk.exe
@@ -15,24 +15,38 @@
 # Outlook Refined
 
 Restyles the new Outlook for Windows (olk.exe) from inside its own page. The mod
-adds one script to each Outlook window when the window is created. It reads
-nothing from disk and opens no ports. The agenda, month grid and Other inbox
-card ask Outlook's own mail service for your calendar and inbox, from inside
-its page and with the session Outlook is already signed in to; nothing is
-stored, logged or sent anywhere else.
+adds one script to each Outlook window when the window is created, and the
+script stops at once unless the page is one of Outlook's own. It reads nothing
+from disk, opens no ports and fetches nothing from the network.
+
+![Folder pane](https://raw.githubusercontent.com/ae-reid-havens/outlook-refined/main/docs/folder-pane.png)
 
 Restart Outlook after enabling the mod or changing a setting.
+
+**What it asks Outlook for.** The agenda, month grid and Other inbox card read
+your calendar and inbox through Outlook's own mail service, from inside its
+page, signed with the session Outlook already holds: the mod keeps the request
+headers Outlook sets, in memory, and reuses them. Those features refresh every
+few minutes while they are on, and each is off until you turn it on. Nothing is
+stored, logged or sent anywhere else, and no credential is written down.
+
+**Where your edits are kept.** Groups, renames, folds, account order and the
+pane and card sizes are saved in Windhawk's own storage for this mod, so they
+leave when the mod does. State an earlier version wrote into Outlook's own local
+storage is moved across the first time this one runs. Other Outlook windows
+that are already open pick up a change when they are reopened.
 
 **Folder pane:** Favorites in groups that fold (right-click a group header for
 its menu, Shift+right-click a favorite to rename or move it), per-account
 compose buttons, a resizable pane, account trees under one foldable heading,
-accounts reordered by dragging. Edits made inside Outlook are kept per PC in
-Outlook's own storage.
+accounts reordered by dragging.
 
-**Agenda:** today and the next days from every account's calendar at the
-bottom of the folder pane, with Outlook's event icons and a join button for
-online meetings, under a month grid shaded by booked hours. **Other inbox:**
-optionally, the newest Other conversations below the Focused list.
+**Agenda:** today and the next days from every account's calendar at the bottom
+of the folder pane, with a join button for online meetings, under a month grid
+shaded by booked hours. **Other inbox:** the newest Other conversations below
+the Focused list.
+
+![Agenda and the Other inbox card](https://raw.githubusercontent.com/ae-reid-havens/outlook-refined/main/docs/other-inbox.png)
 
 **Calendar:** one row per account, compact time zones, start and end times on
 event tiles, overlapping events cascaded or merged.
@@ -44,6 +58,12 @@ readable body width. **Ribbon:** the group-name row under the buttons goes.
 panes, ribbon and buttons go, panes that scroll are released so nothing is cut
 off, quoted replies can be lightened or dropped, pictures and tables are kept
 whole, and anything too wide for the page is scaled down to fit.
+
+**Known limits.** Most features find Outlook's own elements by English labels
+("Focused", "Other", "Navigation pane", "Reading Pane") and read times written
+as 1:30 PM, so in another display language, or with a 24-hour clock, those
+parts quietly do nothing. The folder pane, the agenda and the print layout are
+the parts that depend on this most.
 */
 // ==/WindhawkModReadme==
 
@@ -87,18 +107,18 @@ whole, and anything too wide for the page is scaled down to fit.
 - paneWidth: 0
   $name: Folder pane width (px)
   $description: 0 keeps Outlook's own width. A width set by dragging the pane's edge wins; double-click the edge to return to this one
-- agenda: true
+- agenda: false
   $name: Agenda under the folder pane
-  $description: Today and the next days from every account's calendar, with a join button for online meetings. Read through the session Outlook is signed in to; nothing is stored or sent anywhere else
+  $description: Today and the next days from every account's calendar, with a join button for online meetings. Reads your calendar through Outlook's own mail service, signed with the session Outlook already holds, and refreshes every five minutes while it is on. Nothing is stored or sent anywhere else
 - agendaDays: 3
   $name: Agenda days
   $description: Days the agenda lists, today included (1 to 14)
-- monthHeatMap: true
+- monthHeatMap: false
   $name: Month grid above the agenda
-  $description: Each day shaded by its booked hours; the arrows browse other months
+  $description: Each day shaded by its booked hours; the arrows browse other months. Reads the same calendar data as the agenda, through Outlook's session
 - otherCard: false
   $name: Other inbox under Focused
-  $description: While an inbox shows its Focused tab, its newest Other conversations sit below the list. A button by the tabs switches back to Outlook's own tabs
+  $description: While an inbox shows its Focused tab, its newest Other conversations sit below the list. A button by the tabs switches back to Outlook's own tabs. Reads the Other list through Outlook's session and refreshes every two minutes while it is on
 - calendarRowPerAccount: true
   $name: Calendar, one row per account
 - calendarPaneWidth: 180
@@ -148,7 +168,10 @@ whole, and anything too wide for the page is scaled down to fit.
 
 #include <unknwn.h>
 #include <atomic>
+#include <map>
 #include <string>
+#include <string_view>
+#include <vector>
 
 // Interface ids and vtable slots from WebView2.h (Microsoft.Web.WebView2 SDK
 // 1.0.3179.45, BSD licence). COM vtables are a stable ABI, so slots never move.
@@ -160,14 +183,22 @@ constexpr GUID kIID_ScriptAdded = {0xb99369f3, 0x9b11, 0x47b5, {0xbc, 0x6f, 0x8e
 constexpr GUID kIID_Env3 = {0x80a22ae3, 0xbe7c, 0x4ce2, {0xaf, 0xe1, 0x5a, 0x50, 0x05, 0x6c, 0xde, 0xeb}};
 constexpr GUID kIID_Env10 = {0xee0eb9df, 0x6f12, 0x46ce, {0xb5, 0x3f, 0x3f, 0x47, 0xb9, 0xc9, 0x28, 0xe0}};
 constexpr GUID kIID_Controller = {0x4d00c0d1, 0x9434, 0x4eb6, {0x80, 0x78, 0x86, 0x97, 0xa5, 0x60, 0x33, 0x4f}};
+constexpr GUID kIID_WebMessageReceived = {0x57213f19, 0x00e6, 0x49fa, {0x8e, 0x07, 0x89, 0x8e, 0xa0, 0x1e, 0xcb, 0xd2}};
 
 enum {
     kEnv_CreateController = 3,
     kEnv3_CreateCompositionController = 9,
     kEnv10_CreateControllerWithOptions = 21,
     kEnv10_CreateCompositionControllerWithOptions = 22,
+    kController_GetParentWindow = 21,
+    kController_Close = 24,
     kController_GetCoreWebView2 = 25,
     kWebView_AddScriptOnDocumentCreated = 27,
+    kWebView_RemoveScriptOnDocumentCreated = 28,
+    kWebView_ExecuteScript = 29,
+    kWebView_AddWebMessageReceived = 34,
+    kWebView_RemoveWebMessageReceived = 35,
+    kArgs_TryGetWebMessageAsString = 5,
     kHandler_Invoke = 3,
 };
 
@@ -246,6 +277,43 @@ void AddList(std::wstring& json, PCWSTR name, std::initializer_list<PCWSTR> fiel
     AddField(json, name, arr + L"]");
 }
 
+// ==== the mod's own saved state ====
+
+// Edits made inside Outlook (groups, renames, folds, account order, pane and card
+// sizes) are the mod's state, not Outlook's, so they live in Windhawk's storage and
+// leave with the mod. They are handed to the page in OLKT_CONFIG.store, and the page
+// sends each change back over the WebView's message channel (see MessageReceived).
+constexpr PCWSTR kStoreKeys[] = {
+    L"olkt-favorites", L"olkt-account-order", L"olkt-folds",        L"olkt-pane-width",
+    L"olkt-agenda-height", L"olkt-other-height", L"olkt-other-split", L"olkt-other-folds",
+};
+constexpr size_t kStoreMaxChars = 65536;
+
+SRWLOCK g_storeLock = SRWLOCK_INIT;
+std::map<std::wstring, std::wstring> g_store;
+
+void LoadStore() {
+    std::vector<wchar_t> buffer(kStoreMaxChars);
+    AcquireSRWLockExclusive(&g_storeLock);
+    g_store.clear();
+    for (PCWSTR key : kStoreKeys) {
+        buffer[0] = L'\0';
+        if (Wh_GetStringValue(key, buffer.data(), buffer.size()) && buffer[0]) g_store[key] = buffer.data();
+    }
+    ReleaseSRWLockExclusive(&g_storeLock);
+}
+
+void AddStore(std::wstring& json) {
+    std::wstring object = L"{";
+    AcquireSRWLockShared(&g_storeLock);
+    for (const auto& [key, value] : g_store) {
+        if (object.size() > 1) object += L",";
+        object += JsonString(key.c_str()) + L":" + JsonString(value.c_str());
+    }
+    ReleaseSRWLockShared(&g_storeLock);
+    AddField(json, L"store", object + L"}");
+}
+
 SRWLOCK g_scriptLock = SRWLOCK_INIT;
 std::wstring g_script;
 
@@ -281,6 +349,7 @@ void BuildScript() {
     AddString(json, L"printFit");
     AddBool(json, L"printKeepChartsWhole");
     AddString(json, L"printQuotedReplies");
+    AddStore(json);
     json += L"}";
     std::wstring script = L"{\nconst OLKT_CONFIG = " + json + L";\n" + kPageScript + L"\n}";
     AcquireSRWLockExclusive(&g_scriptLock);
@@ -303,6 +372,128 @@ HRESULT Forward(IUnknown* handler, HRESULT hr, IUnknown* result) {
     return reinterpret_cast<Invoke_t>(Slot(handler, kHandler_Invoke))(handler, hr, result);
 }
 
+// EventRegistrationToken from eventtoken.h: one INT64, so an add/remove pair can be
+// called through the vtable without pulling in the WinRT headers.
+struct EventToken {
+    INT64 value;
+};
+
+// ==== state the page sends back ====
+
+// "olkt-store", the key, then the value, one per line; an empty value deletes the key.
+// Outlook's own messages are JSON and never match, so they pass straight through.
+void StoreMessage(PCWSTR text) {
+    constexpr std::wstring_view kPrefix = L"olkt-store\n";
+    std::wstring_view message(text);
+    if (!message.starts_with(kPrefix)) return;
+    message.remove_prefix(kPrefix.size());
+    size_t line = message.find(L'\n');
+    if (line == std::wstring_view::npos) return;
+    std::wstring key(message.substr(0, line));
+    std::wstring value(message.substr(line + 1));
+    // Only the mod's own keys, and nothing big enough to bloat the registry: the page
+    // is trusted no further than that.
+    bool known = false;
+    for (PCWSTR k : kStoreKeys) known = known || key == k;
+    if (!known || value.size() >= kStoreMaxChars) return;
+    AcquireSRWLockExclusive(&g_storeLock);
+    if (value.empty()) {
+        g_store.erase(key);
+        Wh_DeleteValue(key.c_str());
+    } else {
+        g_store[key] = value;
+        Wh_SetStringValue(key.c_str(), value.c_str());
+    }
+    ReleaseSRWLockExclusive(&g_storeLock);
+    BuildScript();  // windows opened from here on start with the new state
+}
+
+class MessageReceived final : public IUnknown {
+    std::atomic<ULONG> refs_{1};
+
+   public:
+    MessageReceived() { ++g_liveObjects; }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (IsEqualGUID(iid, kIID_IUnknown) || IsEqualGUID(iid, kIID_WebMessageReceived)) {
+            *out = this;
+            AddRef();
+            return S_OK;
+        }
+        *out = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        ULONG n = --refs_;
+        if (!n) {
+            delete this;
+            --g_liveObjects;
+        }
+        return n;
+    }
+    virtual HRESULT STDMETHODCALLTYPE Invoke(IUnknown* sender, IUnknown* args) {
+        LPWSTR text = nullptr;
+        using TryGet_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, LPWSTR*);
+        // Not a string message (Outlook posts objects): nothing of ours.
+        if (FAILED(reinterpret_cast<TryGet_t>(Slot(args, kArgs_TryGetWebMessageAsString))(args, &text)) || !text) {
+            return S_OK;
+        }
+        StoreMessage(text);
+        CoTaskMemFree(text);
+        return S_OK;
+    }
+};
+
+// ==== the WebViews our script is in ====
+
+// One per live Outlook window, so disabling the mod can take the script out again
+// instead of leaving it running until Outlook restarts. `controller` is kept as an
+// identity only, never called, so it holds no reference and no window alive.
+struct PageView {
+    IUnknown* webview;
+    void* controller;
+    HWND window;
+    std::wstring scriptId;
+    EventToken token;
+};
+
+SRWLOCK g_viewsLock = SRWLOCK_INIT;
+std::vector<PageView> g_views;
+
+void AddView(IUnknown* webview, void* controller, HWND window, PCWSTR scriptId) {
+    MessageReceived* handler = new MessageReceived();
+    EventToken token{};
+    using Add_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, IUnknown*, EventToken*);
+    HRESULT hr = reinterpret_cast<Add_t>(Slot(webview, kWebView_AddWebMessageReceived))(webview, handler, &token);
+    handler->Release();
+    if (FAILED(hr)) Wh_Log(L"add_WebMessageReceived failed: 0x%08X", hr);
+    webview->AddRef();
+    AcquireSRWLockExclusive(&g_viewsLock);
+    g_views.push_back({webview, controller, window, scriptId ? scriptId : L"", token});
+    ReleaseSRWLockExclusive(&g_viewsLock);
+}
+
+// Lets go of one WebView on its own thread: the script comes off, what is already on
+// the page is undone, and the message handler goes with it.
+void ReleaseView(const PageView& view, bool removeScript) {
+    using RemoveScript_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, LPCWSTR);
+    using Execute_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, LPCWSTR, IUnknown*);
+    using RemoveMessage_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, EventToken);
+    if (removeScript) {
+        if (!view.scriptId.empty()) {
+            reinterpret_cast<RemoveScript_t>(Slot(view.webview, kWebView_RemoveScriptOnDocumentCreated))(
+                view.webview, view.scriptId.c_str());
+        }
+        reinterpret_cast<Execute_t>(Slot(view.webview, kWebView_ExecuteScript))(
+            view.webview, L"window.__olkt && window.__olkt.remove(true)", nullptr);
+    }
+    if (view.token.value) {
+        reinterpret_cast<RemoveMessage_t>(Slot(view.webview, kWebView_RemoveWebMessageReceived))(view.webview,
+                                                                                                 view.token);
+    }
+    view.webview->Release();
+}
+
 // Completion handler for AddScriptToExecuteOnDocumentCreated. Holds back Outlook's
 // controller handler until the script is registered, because Outlook navigates from
 // that handler and the window's first document must already get the script.
@@ -311,11 +502,16 @@ class ScriptAdded final : public IUnknown {
     std::atomic<bool> forwarded_{false};
     IUnknown* outlook_;
     IUnknown* controller_;
+    IUnknown* webview_;
+    void* controllerKey_;
+    HWND window_;
 
    public:
-    ScriptAdded(IUnknown* outlook, IUnknown* controller) : outlook_(outlook), controller_(controller) {
+    ScriptAdded(IUnknown* outlook, IUnknown* controller, IUnknown* webview, void* controllerKey, HWND window)
+        : outlook_(outlook), controller_(controller), webview_(webview), controllerKey_(controllerKey), window_(window) {
         outlook_->AddRef();
         controller_->AddRef();
+        webview_->AddRef();
         ++g_liveObjects;
     }
     // Hands Outlook its controller, once only.
@@ -338,13 +534,18 @@ class ScriptAdded final : public IUnknown {
             ForwardOnce();  // dropped without a completion: Outlook still gets its window
             outlook_->Release();
             controller_->Release();
+            webview_->Release();
             delete this;
             --g_liveObjects;
         }
         return n;
     }
     virtual HRESULT STDMETHODCALLTYPE Invoke(HRESULT hr, LPCWSTR id) {
-        if (FAILED(hr)) Wh_Log(L"Page script not added: hr=0x%08X", hr);
+        if (FAILED(hr)) {
+            Wh_Log(L"Page script not added: hr=0x%08X", hr);
+        } else {
+            AddView(webview_, controllerKey_, window_, id);
+        }
         ForwardOnce();
         return S_OK;
     }
@@ -391,6 +592,40 @@ class WrappedHandler final : public IUnknown {
 // another hooked method internally is wrapped only once.
 thread_local int g_inCreate = 0;
 
+using ControllerClose_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*);
+ControllerClose_t ControllerClose_Original;
+
+// Outlook closes a window's controller when the window goes. Dropping our reference
+// here keeps the mod from holding dead WebViews alive for the rest of the session.
+HRESULT STDMETHODCALLTYPE ControllerClose_Hook(IUnknown* controller) {
+    PageView view{};
+    bool found = false;
+    AcquireSRWLockExclusive(&g_viewsLock);
+    for (auto it = g_views.begin(); it != g_views.end(); ++it) {
+        if (it->controller == controller) {
+            view = *it;
+            found = true;
+            g_views.erase(it);
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_viewsLock);
+    // Close is called on the WebView's own thread, so this is the right place for it.
+    if (found) ReleaseView(view, false);
+    return ControllerClose_Original(controller);
+}
+
+std::atomic<bool> g_controllerHooked{false};
+
+// Controllers share one vtable, so this hook covers every window Outlook opens.
+void HookControllerClose(IUnknown* controller) {
+    if (g_controllerHooked.exchange(true)) return;
+    Wh_SetFunctionHook(Slot(controller, kController_Close), (void*)ControllerClose_Hook,
+                       (void**)&ControllerClose_Original);
+    Wh_ApplyHookOperations();
+    Wh_Log(L"Controller Close hooked");
+}
+
 // Adds the page script to each new WebView, then hands Outlook its controller once
 // the script is registered (ScriptAdded). Any failure hands it over at once.
 HRESULT OnController(HRESULT result_hr, IUnknown* result, IUnknown* outlook) {
@@ -403,6 +638,13 @@ HRESULT OnController(HRESULT result_hr, IUnknown* result, IUnknown* outlook) {
     IUnknown* webview = nullptr;
     using Get_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, IUnknown**);
     HRESULT hr = reinterpret_cast<Get_t>(Slot(controller, kController_GetCoreWebView2))(controller, &webview);
+    // The window the WebView lives in: taking the script out again later has to happen
+    // on that window's own thread.
+    HWND window = nullptr;
+    using GetWindow_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, HWND*);
+    reinterpret_cast<GetWindow_t>(Slot(controller, kController_GetParentWindow))(controller, &window);
+    HookControllerClose(controller);
+    void* controllerKey = controller;
     controller->Release();
     if (FAILED(hr) || !webview) {
         Wh_Log(L"get_CoreWebView2 failed: 0x%08X", hr);
@@ -411,7 +653,7 @@ HRESULT OnController(HRESULT result_hr, IUnknown* result, IUnknown* outlook) {
     AcquireSRWLockShared(&g_scriptLock);
     std::wstring script = g_script;
     ReleaseSRWLockShared(&g_scriptLock);
-    auto* done = new ScriptAdded(outlook, result);
+    auto* done = new ScriptAdded(outlook, result, webview, controllerKey, window);
     using Add_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, LPCWSTR, IUnknown*);
     hr = reinterpret_cast<Add_t>(Slot(webview, kWebView_AddScriptOnDocumentCreated))(webview, script.c_str(), done);
     webview->Release();
@@ -529,7 +771,72 @@ HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR name, HANDLE file, DWORD flags) {
     return module;
 }
 
+// ==== unload ====
+
+// WebView2 objects answer only on the thread that made them, so the teardown is sent
+// to each window's own thread, the way Windhawk's taskbar mods do it.
+using RunFromWindowThreadProc_t = void(WINAPI*)(PVOID parameter);
+
+struct RunFromWindowThreadParam {
+    RunFromWindowThreadProc_t proc;
+    PVOID param;
+};
+
+UINT g_runFromWindowThreadMessage;
+
+LRESULT CALLBACK CallWndProcForRunFromWindowThread(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION) {
+        const CWPSTRUCT* cwp = (const CWPSTRUCT*)lParam;
+        if (cwp->message == g_runFromWindowThreadMessage) {
+            auto* param = (RunFromWindowThreadParam*)cwp->lParam;
+            param->proc(param->param);
+        }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+bool RunFromWindowThread(HWND window, RunFromWindowThreadProc_t proc, PVOID procParam) {
+    DWORD thread = GetWindowThreadProcessId(window, nullptr);
+    if (!thread) return false;
+    if (thread == GetCurrentThreadId()) {
+        proc(procParam);
+        return true;
+    }
+    HHOOK hook = SetWindowsHookEx(WH_CALLWNDPROC, CallWndProcForRunFromWindowThread, nullptr, thread);
+    if (!hook) return false;
+    RunFromWindowThreadParam param{proc, procParam};
+    DWORD_PTR unused = 0;
+    // A hung Outlook window must not hold the unload up for ever.
+    LRESULT sent = SendMessageTimeout(window, g_runFromWindowThreadMessage, 0, (LPARAM)&param, SMTO_ABORTIFHUNG, 5000,
+                                      &unused);
+    UnhookWindowsHookEx(hook);
+    return sent != 0;
+}
+
+void WINAPI ReleaseViewOnThread(PVOID param) {
+    ReleaseView(*(const PageView*)param, true);
+}
+
+// Runs while the hooks are still in place, so every open Outlook window gives the
+// script back before the DLL goes: the styling, the timers and the wrapped fetch all
+// stop at once, with no restart needed.
+void Wh_ModBeforeUninit() {
+    AcquireSRWLockExclusive(&g_viewsLock);
+    std::vector<PageView> views;
+    views.swap(g_views);
+    ReleaseSRWLockExclusive(&g_viewsLock);
+    for (const PageView& view : views) {
+        if (!RunFromWindowThread(view.window, ReleaseViewOnThread, (PVOID)&view)) {
+            // Its window is gone or not answering: leave the object alone rather than
+            // call into WebView2 from the wrong thread.
+            Wh_Log(L"Could not reach the WebView's thread; its script stays until Outlook restarts");
+        }
+    }
+}
+
 BOOL Wh_ModInit() {
+    g_runFromWindowThreadMessage = RegisterWindowMessage(L"Windhawk_RunFromWindowThread_outlook-refined");
+    LoadStore();
     BuildScript();
     if (HookLoader(false)) return TRUE;
     HMODULE kernelBase = GetModuleHandleW(L"kernelbase.dll");

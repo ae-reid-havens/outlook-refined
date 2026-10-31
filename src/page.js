@@ -7,6 +7,11 @@
 (() => {
   // Outlook has hidden subframes with folder trees of their own; only the main window is ours.
   if (window.top !== window) return 'skipped subframe';
+  // Outlook opens WebViews for pages of its own and for add-in dialogs, which load
+  // third-party sites. Only Outlook's own hosts are ours: anywhere else the script
+  // returns before it wraps anything or adds a stylesheet.
+  const OUTLOOK_HOSTS = /(^|\.)outlook(-sdf)?\.(office|office365|live)\.com$|(^|\.)outlook(-sdf)?\.cloud\.microsoft$/i;
+  if (!OUTLOOK_HOSTS.test(location.hostname)) return 'not an Outlook page';
   // ==== Outlook's own session ====
   // Outlook signs each call to its mail service with a per-account Authorization header.
   // fetch and XMLHttpRequest are wrapped once per page to keep the newest such headers
@@ -63,7 +68,7 @@
     };
     const isStartup = url => { try { return /\/owa\/startupdata\.ashx/i.test(new URL(url, location.href).pathname); } catch { return false; } };
     const nativeFetch = window.fetch;
-    window.fetch = function (input, init) {
+    const wrappedFetch = function (input, init) {
       let url, anchor;
       try {
         url = typeof input === 'string' ? input : input instanceof URL ? input.href : input && input.url;
@@ -78,13 +83,32 @@
       }
       return out;
     };
+    window.fetch = wrappedFetch;
     const X = XMLHttpRequest.prototype, open = X.open, setHeader = X.setRequestHeader, send = X.send;
-    X.open = function (method, url) { this.__olktUrl = String(url); this.__olktHeaders = []; return open.apply(this, arguments); };
-    X.setRequestHeader = function (k, v) { if (this.__olktHeaders) this.__olktHeaders.push([k, v]); return setHeader.apply(this, arguments); };
-    X.send = function () { try { note(this.__olktUrl, this.__olktHeaders || []); } catch {} return send.apply(this, arguments); };
+    const wrappedOpen = function (method, url) { this.__olktUrl = String(url); this.__olktHeaders = []; return open.apply(this, arguments); };
+    const wrappedSetHeader = function (k, v) { if (this.__olktHeaders) this.__olktHeaders.push([k, v]); return setHeader.apply(this, arguments); };
+    const wrappedSend = function () { try { note(this.__olktUrl, this.__olktHeaders || []); } catch {} return send.apply(this, arguments); };
+    X.open = wrappedOpen;
+    X.setRequestHeader = wrappedSetHeader;
+    X.send = wrappedSend;
     return {
       v: SESSION_V,
       has: anchor => byAnchor.has(anchor),
+      // Called when the mod is disabled: puts fetch and XHR back the way they were and
+      // drops every header the store holds. Only restores what is still ours, so a
+      // wrapper another extension added after ours stays in place.
+      stop() {
+        if (window.fetch === wrappedFetch) window.fetch = nativeFetch;
+        if (X.open === wrappedOpen) X.open = open;
+        if (X.setRequestHeader === wrappedSetHeader) X.setRequestHeader = setHeader;
+        if (X.send === wrappedSend) X.send = send;
+        byAnchor.clear();
+        byCategory.clear();
+        asked.clear();
+        listeners.clear();
+        if (window.__olktSession === this) delete window.__olktSession;
+        return 'session released';
+      },
       // The category palette for a mailbox, if Outlook has loaded one this session.
       palette: anchor => byCategory.get(anchor) || null,
       anchors: () => [...byAnchor.keys()],
@@ -131,10 +155,37 @@
   const WIDTH_KEY = 'olkt-pane-width';
   const FAVORITES_KEY = 'olkt-favorites';
   const ACCOUNT_ORDER_KEY = 'olkt-account-order';
-  // Static choices come from the mod's settings; edits made inside Outlook (groups,
-  // renames, folds, account order, pane width) live in localStorage on Outlook's origin.
+  // Static choices come from the mod's settings. Edits made inside Outlook (groups,
+  // renames, folds, account order, pane and card sizes) belong to the mod rather than to
+  // Outlook, so they live in Windhawk's own storage: the mod hands them in through
+  // OLKT_CONFIG.store and takes each write back over the WebView's message channel.
+  // Nothing of ours is left in Outlook's profile when the mod goes.
   const S = OLKT_CONFIG;
-  const stored = (key, fallback) => { try { const v = JSON.parse(localStorage.getItem(key)); return Array.isArray(v) ? v : fallback; } catch { return fallback; } };
+  const STORE_KEYS = [FOLD_KEY, WIDTH_KEY, FAVORITES_KEY, ACCOUNT_ORDER_KEY, 'olkt-agenda-height', 'olkt-other-height', 'olkt-other-split', 'olkt-other-folds'];
+  const store = (() => {
+    const mem = new Map(Object.entries(S.store || {}));
+    // One line each: the marker, the key, then the value, with an empty value meaning
+    // delete. Outlook's own handler reads its messages as JSON and ignores this shape.
+    const post = (key, value) => {
+      try { window.chrome.webview.postMessage('olkt-store\n' + key + '\n' + (value == null ? '' : value)); } catch {}
+    };
+    // State an earlier version wrote into Outlook's localStorage moves across once, so
+    // favorites and sizes survive the change and Outlook's profile is left clean.
+    for (const key of STORE_KEYS) {
+      try {
+        const old = localStorage.getItem(key);
+        if (old == null) continue;
+        if (!mem.has(key)) { mem.set(key, old); post(key, old); }
+        localStorage.removeItem(key);
+      } catch {}
+    }
+    return {
+      getItem: key => (mem.has(key) ? mem.get(key) : null),
+      setItem: (key, value) => { mem.set(key, String(value)); post(key, String(value)); },
+      removeItem: key => { mem.delete(key); post(key, null); },
+    };
+  })();
+  const stored = (key, fallback) => { try { const v = JSON.parse(store.getItem(key)); return Array.isArray(v) ? v : fallback; } catch { return fallback; } };
   // Pattern groups fill themselves with each account's folder of that name.
   const DEFAULT_FAVORITES = [
     { id: 'outgoing', label: 'Outgoing', items: [
@@ -193,9 +244,9 @@
     return !document.querySelector(row(suffixed)) && account === primary() ? 'inbox' : suffixed;
   };
   let folds = {};
-  try { folds = JSON.parse(localStorage.getItem(FOLD_KEY) || '{}'); } catch {}
+  try { folds = JSON.parse(store.getItem(FOLD_KEY) || '{}'); } catch {}
   let paneWidth = 0;
-  try { paneWidth = Number(localStorage.getItem(WIDTH_KEY)) || 0; } catch {}
+  try { paneWidth = Number(store.getItem(WIDTH_KEY)) || 0; } catch {}
   if (!S.resizablePane) paneWidth = 0;
   paneWidth = paneWidth || cfg.paneWidth;
 
@@ -286,8 +337,8 @@
   function save() {
     // Per PC, on Outlook's origin; other open windows pick it up when they next start.
     try {
-      if (S.favoritesGroups) localStorage.setItem(FAVORITES_KEY, JSON.stringify(cfg.favorites));
-      localStorage.setItem(ACCOUNT_ORDER_KEY, JSON.stringify(Object.keys(cfg.accounts)));
+      if (S.favoritesGroups) store.setItem(FAVORITES_KEY, JSON.stringify(cfg.favorites));
+      store.setItem(ACCOUNT_ORDER_KEY, JSON.stringify(Object.keys(cfg.accounts)));
     } catch {}
     render();
   }
@@ -308,19 +359,19 @@
     out.push(`.olkt-resize:hover,.olkt-resize.dragging{background:var(--colorBrandStroke1,#4aa3f0);opacity:.6}`);
 
     if (cfg.hideAccountTrees) {
-      out.push(`div:has(> [role="treeitem"][aria-level="1"]:not([data-folder-name="favorites"])){display:none!important}`);
-      out.push(`div:has(> ${row('add account')}){display:none!important}`);
+      out.push(`${PANE} div:has(> [role="treeitem"][aria-level="1"]:not([data-folder-name="favorites"])){display:none!important}`);
+      out.push(`${PANE} div:has(> ${row('add account')}){display:none!important}`);
     }
     for (const [acct, name] of Object.entries(cfg.accounts || {})) {
       if (!name) continue;
-      const r = `[role="treeitem"][aria-level="1"][data-folder-name=${q(acct)}] > span:first-of-type`;
+      const r = `${PANE} [role="treeitem"][aria-level="1"][data-folder-name=${q(acct)}] > span:first-of-type`;
       out.push(`${r}{font-size:0!important}`, `${r}::after{content:${JSON.stringify(name)};font-size:${size}}`);
     }
     if (cfg.accountsHeading && folds[ACCOUNTS]) {
-      out.push(`div:has(> [role="treeitem"][aria-level="1"]:not([data-folder-name="favorites"])){display:none!important}`);
-      out.push(`div:has(> ${row('add account')}){display:none!important}`);
+      out.push(`${PANE} div:has(> [role="treeitem"][aria-level="1"]:not([data-folder-name="favorites"])){display:none!important}`);
+      out.push(`${PANE} div:has(> ${row('add account')}){display:none!important}`);
     }
-    if (cfg.hideAddAccount) out.push(`div:has(> ${row('add account')}){display:none!important}`);
+    if (cfg.hideAddAccount) out.push(`${PANE} div:has(> ${row('add account')}){display:none!important}`);
     // Account order follows the "accounts" list; dragging an account rewrites it.
     out.push(`${ACCT_LIST}{display:flex!important;flex-direction:column}`);
     out.push(`${ACCT_LIST} > div{order:50}`);
@@ -417,7 +468,6 @@
     out.push(`.olkt-ev b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;grid-column:2}`);
     out.push(`.olkt-repwrap{display:inline-flex;vertical-align:-2px;margin-right:4px;color:var(--colorNeutralForeground3,#a3a3a3)}`);
     out.push(`.olkt-rep{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}`);
-    out.push(`.olkt-charm{display:inline-block;width:13px;height:13px;margin-right:5px;vertical-align:-2px;background:currentColor;-webkit-mask:var(--olkt-charm) center/contain no-repeat;mask:var(--olkt-charm) center/contain no-repeat}`);
     out.push(`.olkt-ev small{grid-column:2;color:var(--colorNeutralForeground3,#a3a3a3);font-size:11px;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`);
     out.push(`.olkt-ev.free b{font-weight:400;color:var(--colorNeutralForeground2,#c8c8c8)}`);
     out.push(`.olkt-join{all:unset;cursor:pointer;grid-column:3;grid-row:1 / span 2;width:22px;height:22px;margin-right:6px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:#5b5fc7}`);
@@ -546,7 +596,7 @@
 
   function toggleFold(id) {
     folds[id] = !folds[id];
-    try { localStorage.setItem(FOLD_KEY, JSON.stringify(folds)); } catch {}
+    try { store.setItem(FOLD_KEY, JSON.stringify(folds)); } catch {}
     render();
   }
 
@@ -745,7 +795,7 @@
       const up = () => {
         handle.classList.remove('dragging');
         handle.removeEventListener('pointermove', move);
-        try { localStorage.setItem(WIDTH_KEY, String(paneWidth)); } catch {}
+        try { store.setItem(WIDTH_KEY, String(paneWidth)); } catch {}
       };
       handle.addEventListener('pointermove', move);
       handle.addEventListener('pointerup', up, { once: true });
@@ -753,7 +803,7 @@
     });
     handle.addEventListener('dblclick', () => {
       paneWidth = cfg.paneWidth;
-      try { localStorage.removeItem(WIDTH_KEY); } catch {}
+      try { store.removeItem(WIDTH_KEY); } catch {}
       render();
     });
     pane.appendChild(handle);
@@ -865,7 +915,7 @@
     return rec;
   }
 
-  const CAL_PROPS = ['calendar:IsAllDayEvent', 'calendar:IsCancelled', 'calendar:IsSeriesCancelled', 'calendar:Location', 'calendar:IsOnlineMeeting', 'calendar:JoinOnlineMeetingUrl', 'calendar:StartWallClock', 'calendar:EndWallClock', 'item:Categories', 'item:Preview', 'calendar:Charm', 'calendar:UID', 'item:ParentFolderId'].map(PROP);
+  const CAL_PROPS = ['calendar:IsAllDayEvent', 'calendar:IsCancelled', 'calendar:IsSeriesCancelled', 'calendar:Location', 'calendar:IsOnlineMeeting', 'calendar:JoinOnlineMeetingUrl', 'calendar:StartWallClock', 'calendar:EndWallClock', 'item:Categories', 'item:Preview', 'calendar:UID', 'item:ParentFolderId'].map(PROP);
   const dateOnly = s => String(s).slice(0, 10) + 'T00:00:00Z'; // all-day events: the item's own date
   const instant = s => new Date(s).toISOString();
   // One account's events between from and to (occurrences expanded), as the agenda draws them.
@@ -894,7 +944,6 @@
         repeating: i.CalendarItemType === 'Occurrence' || i.CalendarItemType === 'Exception',
         categories: i.Categories && i.Categories.length ? i.Categories : undefined,
         where: meetingLink(place) || /^microsoft teams meeting$/i.test(place) ? '' : place,
-        charm: i.Charm && i.Charm !== 'None' ? String(i.Charm).toLowerCase() : undefined,
         join: joinIn(i.JoinOnlineMeetingUrl, place, i.Preview),
       };
       if (!e.join && joinsUntil && e.id && !allDay && (i.IsOnlineMeeting || /teams|zoom|webex|meet\b/i.test(place))
@@ -948,7 +997,7 @@
       const kept = first.get(eventKey(e));
       if (kept && kept.account !== e.account) {
         // The same meeting on another calendar: the first copy stays, and takes what it lacks.
-        for (const f of ['join', 'charm', 'where', 'categories']) if (!kept[f] && e[f]) kept[f] = e[f];
+        for (const f of ['join', 'where', 'categories']) if (!kept[f] && e[f]) kept[f] = e[f];
         continue;
       }
       if (!kept) first.set(eventKey(e), e);
@@ -1081,7 +1130,7 @@
   if (!(ALLDAY in folds)) folds[ALLDAY] = true;
   let agenda = null;
   let agendaEl = null;
-  let agendaHeight = Number(localStorage.getItem(HEIGHT_KEY)) || 0; // 0 = fill free space
+  let agendaHeight = Number(store.getItem(HEIGHT_KEY)) || 0; // 0 = fill free space
   const fmtTime = d => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   const dayKey = d => d.toDateString();
   // Local midnight that starts d's day, and whether a timed event overlaps that day
@@ -1096,9 +1145,8 @@
 
   function setAgenda(data) { agenda = data; renderAgenda(); return 'agenda ' + data.events.length; }
 
-  // Outlook's event icons ("charms"): each event names its charm, and the art is a
-  // public SVG of that name.
-  const CHARM_URL = 'https://res.public.onecdn.static.microsoft/assets/calendar/calendaricons/owa/svg/';
+  // Outlook's own event icons ("charms") are not drawn here: their art lives on a
+  // Microsoft CDN, and a mod fetches nothing from the network.
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -1107,7 +1155,7 @@
     return e;
   }
 
-  function saveFolds() { try { localStorage.setItem(FOLD_KEY, JSON.stringify(folds)); } catch {} }
+  function saveFolds() { try { store.setItem(FOLD_KEY, JSON.stringify(folds)); } catch {} }
 
   function foldButton(label, key, count) {
     const b = el('button', 'olkt-head');
@@ -1141,11 +1189,6 @@
       wrap.title = 'Repeating event';
       wrap.appendChild(svg);
       title.prepend(wrap);
-    }
-    if (e.charm) {
-      const icon = el('span', 'olkt-charm');
-      icon.style.setProperty('--olkt-charm', 'url("' + CHARM_URL + e.charm + '.svg")');
-      title.prepend(icon);
     }
     row.append(title, el('small', null, e.where ? `${when} · ${e.where}` : when));
     if (e.join) {
@@ -1406,7 +1449,7 @@
       const move = e => { agendaHeight = Math.max(80, Math.round(startH - (e.clientY - startY))); layoutAgenda(); };
       const up = () => {
         grip.removeEventListener('pointermove', move);
-        try { localStorage.setItem(HEIGHT_KEY, String(agendaHeight)); } catch {}
+        try { store.setItem(HEIGHT_KEY, String(agendaHeight)); } catch {}
       };
       grip.addEventListener('pointermove', move);
       grip.addEventListener('pointerup', up, { once: true });
@@ -1414,7 +1457,7 @@
     });
     grip.addEventListener('dblclick', () => {
       agendaHeight = 0;
-      try { localStorage.removeItem(HEIGHT_KEY); } catch {}
+      try { store.removeItem(HEIGHT_KEY); } catch {}
       layoutAgenda();
     });
   }
@@ -1586,13 +1629,6 @@
 
   // Another Outlook window saved its edits: take them, so this window's next save
   // cannot write back an older tree.
-  function onStorage(ev) {
-    if (ev.key === FAVORITES_KEY && S.favoritesGroups) cfg.favorites = stored(FAVORITES_KEY, DEFAULT_FAVORITES);
-    else if (ev.key === ACCOUNT_ORDER_KEY) cfg.accounts = orderedAccounts(stored(ACCOUNT_ORDER_KEY, []));
-    else return;
-    if (current()) render();
-  }
-
   // ==== calendar module ====
   // Left list: one row per account (the expanded account heading and "Show all" go, and
   // each account's "Calendar" row shows the account's short label); a narrower pane.
@@ -1667,7 +1703,7 @@
   const OTHER_PAGE = 40;
   const OTHER_WAIT = 20000; // no reply by then: show Outlook's own Other tab again
   let otherLimit = OTHER_PAGE;
-  let otherHeight = Number(localStorage.getItem(OTHER_H_KEY)) || 0; // 0 = 40% of the column
+  let otherHeight = Number(store.getItem(OTHER_H_KEY)) || 0; // 0 = 40% of the column
 
   function setOther(data) {
     if (data && data.account === otherAccount) {
@@ -1828,7 +1864,7 @@
           const native = cloneGroup(g, !otherFolds[g]);
           if (native) {
             const key = g;
-            onPress(native, () => { otherFolds[key] = !otherFolds[key]; try { localStorage.setItem(OTHER_FOLD_KEY, JSON.stringify(otherFolds)); } catch {} renderOther(); });
+            onPress(native, () => { otherFolds[key] = !otherFolds[key]; try { store.setItem(OTHER_FOLD_KEY, JSON.stringify(otherFolds)); } catch {} renderOther(); });
             list.appendChild(native);
             if (!otherFolds[g]) list.appendChild(otherRow(m, now));
             continue;
@@ -1844,7 +1880,7 @@
           svg.appendChild(p);
           hdr.append(svg, el('span', null, g));
           const key = g;
-          onPress(hdr, () => { otherFolds[key] = !otherFolds[key]; try { localStorage.setItem(OTHER_FOLD_KEY, JSON.stringify(otherFolds)); } catch {} renderOther(); });
+          onPress(hdr, () => { otherFolds[key] = !otherFolds[key]; try { store.setItem(OTHER_FOLD_KEY, JSON.stringify(otherFolds)); } catch {} renderOther(); });
           list.appendChild(hdr);
         }
         if (!otherFolds[g]) list.appendChild(otherRow(m, now));
@@ -1886,7 +1922,7 @@
   // looks and hovers like its neighbors. Off: no section, and Outlook's Other tab is back.
   const OTHER_SPLIT_KEY = 'olkt-other-split';
   let otherSplit = true;
-  try { otherSplit = localStorage.getItem(OTHER_SPLIT_KEY) !== '0'; } catch {}
+  try { otherSplit = store.getItem(OTHER_SPLIT_KEY) !== '0'; } catch {}
   let otherToggle = null;
   function ensureOtherToggle() {
     const tab = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.startsWith('Focused'));
@@ -1909,7 +1945,7 @@
       otherToggle.appendChild(svg);
       onPress(otherToggle, () => {
         otherSplit = !otherSplit;
-        try { localStorage.setItem(OTHER_SPLIT_KEY, otherSplit ? '1' : '0'); } catch {}
+        try { store.setItem(OTHER_SPLIT_KEY, otherSplit ? '1' : '0'); } catch {}
         ensureOther();
       });
     }
@@ -1921,7 +1957,7 @@
 
   const OTHER_FOLD_KEY = 'olkt-other-folds';
   let otherFolds = {};
-  try { otherFolds = JSON.parse(localStorage.getItem(OTHER_FOLD_KEY) || '{}'); } catch {}
+  try { otherFolds = JSON.parse(store.getItem(OTHER_FOLD_KEY) || '{}'); } catch {}
   const listMetrics = {};
 
   // Sizes from Outlook's own list: a date header and the shortest unselected row.
@@ -2172,13 +2208,13 @@
         grip.removeEventListener('pointermove', move);
         grip.removeEventListener('pointerup', up);
         grip.removeEventListener('pointercancel', up);
-        try { localStorage.setItem(OTHER_H_KEY, String(otherHeight)); } catch {}
+        try { store.setItem(OTHER_H_KEY, String(otherHeight)); } catch {}
       };
       grip.addEventListener('pointermove', move);
       grip.addEventListener('pointerup', up);
       grip.addEventListener('pointercancel', up, { once: true });
     });
-    grip.addEventListener('dblclick', () => { otherHeight = 0; try { localStorage.removeItem(OTHER_H_KEY); } catch {} renderOther(); });
+    grip.addEventListener('dblclick', () => { otherHeight = 0; try { store.removeItem(OTHER_H_KEY); } catch {} renderOther(); });
   }
 
   // ==== reading pane ====
@@ -2619,21 +2655,22 @@
     document.addEventListener('pointerdown', onWellPress, true);
     document.addEventListener('keydown', onDocKey, true);
     document.addEventListener('keydown', onWellKey, true);
-    window.addEventListener('storage', onStorage);
     window.addEventListener('resize', onResize);
     window.addEventListener('beforeprint', onBeforePrint);
     window.addEventListener('afterprint', onAfterPrint);
   }
 
   window.__olkt = {
-    remove() {
+    // `full` is passed by the mod when it is being disabled or unloaded: on top of the
+    // handover cleanup it puts fetch and XHR back, so nothing of ours is left running in
+    // a window that stays open. A newer install calls it without `full` and re-wraps.
+    remove(full) {
       observer.disconnect();
       window.__olktGen = gen + 1;
       document.removeEventListener('pointerdown', onDocPointer, true);
       document.removeEventListener('pointerdown', onWellPress, true);
       document.removeEventListener('keydown', onDocKey, true);
       document.removeEventListener('keydown', onWellKey, true);
-      window.removeEventListener('storage', onStorage);
       window.removeEventListener('resize', onResize);
       clearTimeout(resizeTimer);
       window.removeEventListener('beforeprint', onBeforePrint);
@@ -2649,6 +2686,7 @@
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));
       for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked', 'data-olkt-quoted', 'data-olkt-collapsed'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));
       delete window.__olkt;
+      if (full) session.stop();
       return 'removed';
     },
     config: () => cfg,

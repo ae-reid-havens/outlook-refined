@@ -889,9 +889,12 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     const el = document.elementFromPoint(ev.clientX, ev.clientY);
     const head = el && el.closest('.olkt-head');
     const item = el && el.closest('[role="treeitem"]');
-    const target = head ? findGroup(head.dataset.group) : item ? findFolder(item.getAttribute('data-folder-name')) : null;
+    // Kept as a group id or folder name, resolved when the new favorite turns up: a save
+    // in between replaces the tree, and a node held from here would no longer be in it.
+    const key = head ? { group: head.dataset.group } : item ? { folder: item.getAttribute('data-folder-name') } : null;
+    const found = key && (key.group ? findGroup(key.group) : findFolder(key.folder));
     // The names before the release: only a favorite that appears after it was dropped.
-    lastDrop = target ? { target, at: Date.now(), before: new Set(favoriteNames()) } : null;
+    lastDrop = found ? { ...key, at: Date.now(), before: new Set(favoriteNames()) } : null;
   }
 
   // Header above the first account tree. Inserted next to Outlook's nodes, never moving them.
@@ -915,6 +918,15 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     }
     setText(h.querySelector('.olkt-lbl'), cfg.accountsHeading.toUpperCase());
     setAttr(h, 'aria-expanded', String(!folds[ACCOUNTS]));
+  }
+
+  // After a drag, swallow the click its release turns into, and only that one: the
+  // listener goes on the next tick, so a release that makes no click cannot leave the
+  // user's next real click eaten.
+  function swallowNextClick() {
+    const swallow = e => { e.stopPropagation(); e.preventDefault(); };
+    document.addEventListener('click', swallow, { capture: true, once: true });
+    setTimeout(() => document.removeEventListener('click', swallow, true), 0);
   }
 
   // Drag an account root up or down under "All folders" to reorder. A press
@@ -962,11 +974,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       if (!line) return;
       line.remove();
       listEl.classList.remove('olkt-dragging');
-      // Swallow the click the release would otherwise turn into, and only that one: a
-      // release that makes no click must not leave the next real click eaten.
-      const swallow = e => { e.stopPropagation(); e.preventDefault(); };
-      document.addEventListener('click', swallow, { capture: true, once: true });
-      setTimeout(() => document.removeEventListener('click', swallow, true), 0);
+      swallowNextClick();
       const order = roots().map(r => r.getAttribute('data-folder-name'));
       const dragged = item.getAttribute('data-folder-name');
       const from = order.indexOf(dragged);
@@ -990,7 +998,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // added another way, or there before the drop, stays at the top until moved
   // (Shift+right-click).
   function adoptNewFavorites(list) {
-    const drop = lastDrop && Date.now() - lastDrop.at < 15000 ? lastDrop.target : null;
+    const fresh = lastDrop && Date.now() - lastDrop.at < 15000;
+    const drop = fresh ? (lastDrop.group ? findGroup(lastDrop.group) : findFolder(lastDrop.folder)) : null;
     if (!drop || !cfg.favorites.length) return false;
     const before = lastDrop.before;
     const hidden = new Set(cfg.hide);
@@ -1074,28 +1083,27 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       document.removeEventListener('pointerup', end, true);
       document.removeEventListener('pointercancel', end, true);
       document.removeEventListener('scroll', scrolled, true);
-      list.removeEventListener('dragstart', noNative, true);
+      document.removeEventListener('dragstart', noNative, true);
       if (!line) return;
       line.remove();
       list.classList.remove('olkt-dragging');
-      // Swallow the click the release turns into, and only that one.
-      const swallow = c => { c.stopPropagation(); c.preventDefault(); };
-      document.addEventListener('click', swallow, { capture: true, once: true });
-      setTimeout(() => document.removeEventListener('click', swallow, true), 0);
+      swallowNextClick();
       const drop = e.type === 'pointerup' && target(e);
       if (drop) placeAt(folder, drop);
     };
-    list.addEventListener('dragstart', noNative, true);
+    // On the document, not the list: Outlook may swap the list element mid-press.
+    document.addEventListener('dragstart', noNative, true);
     document.addEventListener('pointermove', move, true);
     document.addEventListener('pointerup', end, true);
     document.addEventListener('pointercancel', end, true);
     document.addEventListener('scroll', scrolled, true);
   }
 
-  // Favorites not yet in the tree join it only now that a drop has landed, so an
-  // abandoned drag changes nothing.
+  // Favorites not yet in the tree join it only once a drop has landed on a target that
+  // still exists, so an abandoned drag changes nothing, and the move is a single save.
   function placeAt(folder, drop) {
-    if (!findFolder(folder) || (drop.folder && !findFolder(drop.folder))) placeUnplaced();
+    if (drop.group ? !findGroup(drop.group) : !movable(drop.folder)) return;
+    if (!findFolder(folder) || (drop.folder && !findFolder(drop.folder))) placeUnplaced(true);
     const node = findFolder(folder);
     const ref = drop.group ? findGroup(drop.group) : findFolder(drop.folder);
     const at = node && locate(node);
@@ -1680,11 +1688,16 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     // Match the pane's own background so the tree does not show through. Only an opaque
     // color will do: a picture theme leaves every ancestor transparent or translucent, and
     // then the theme's own background token stands in.
-    // Legacy rgba(r, g, b, a) or the slash form any other color function uses (/ a or / a%).
+    // Legacy rgba(r, g, b, a) or the slash form any other color function uses (/ a, / a%,
+    // / none). Anything unreadable counts as see-through, so it is never the cover.
     const alpha = c => {
       if (c === 'transparent') return 0;
-      const m = /\/\s*([\d.]+)(%?)\s*\)$/.exec(c) || /^rgba\([^)]*,\s*([\d.]+)\)$/.exec(c);
-      return m ? Number(m[1]) / (m[2] === '%' ? 100 : 1) : 1;
+      const slash = /\/\s*([^\s)]+)\s*\)$/.exec(c);
+      const legacy = !slash && /^rgba\([^)]*,\s*([^\s)]+)\)$/.exec(c);
+      const v = (slash || legacy || [])[1];
+      if (v === undefined) return 1;
+      const n = v.endsWith('%') ? Number(v.slice(0, -1)) / 100 : Number(v);
+      return Number.isFinite(n) ? n : 0;
     };
     let bgEl = pane, bg = '';
     while (bgEl && !bg) { const c = getComputedStyle(bgEl).backgroundColor; if (alpha(c) === 1) bg = c; bgEl = bgEl.parentElement; }
@@ -1784,8 +1797,9 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     // (Padding cannot work: this element has no fixed height and just grows.)
     // Outlook's own min-height would beat the cap, so it comes off. The cap is then checked
     // against where the tree really ends: under a zoomed ancestor a CSS pixel inside the tree
-    // is not a pixel on screen, and the first cap lands short or long by that factor. Short
-    // only counts while the tree overflows; a tree that fits simply ends early.
+    // is not a pixel on screen, and the first cap lands long by that factor. Only an
+    // overshoot is corrected: a tree that ends short may be held there by its parent, and
+    // raising the cap then would let it run under the agenda once the parent lets go.
     if (scroller) {
       scroller.style.paddingBottom = '';
       scroller.style.minHeight = '0px';
@@ -1793,8 +1807,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       const avail = Math.max(60, Math.round(agendaEl.getBoundingClientRect().top - top));
       scroller.style.maxHeight = avail + 'px';
       const got = scroller.getBoundingClientRect().bottom - top;
-      const short = got < avail - 1 && scroller.scrollHeight > scroller.clientHeight + 1;
-      if (got > 0 && (got > avail + 1 || short)) scroller.style.maxHeight = Math.max(60, Math.floor(avail * avail / got)) + 'px';
+      if (got > avail + 1) scroller.style.maxHeight = Math.max(60, Math.floor(avail * avail / got)) + 'px';
     }
   }
 
@@ -1894,7 +1907,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   function renameGroupSoon(g) {
     requestAnimationFrame(() => {
       const h = document.querySelector(`.olkt-head[data-group=${q(g.id)}]`);
-      if (h) rename(h, g.label, v => { if (v) { g.label = v; save(); } });
+      // By id at commit: the save that created the group has come back as a new tree.
+      if (h) rename(h, g.label, v => { const live = findGroup(g.id); if (v && live) { live.label = v; save(); } });
     });
   }
 
@@ -1919,27 +1933,30 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
 
   function groupMenu(g, header, x, y) {
     const at = locate(g);
+    // Each action finds the group by id when it runs; a save since the menu opened has
+    // replaced the tree, and a group another window deleted is left alone.
+    const live = fn => () => { const cur = findGroup(g.id); if (cur) fn(cur); };
     showMenu(x, y, [
-      { label: 'Rename group', run: () => rename(header, g.label, v => { if (v) { g.label = v; save(); } }) },
-      { label: 'New group below', run: () => addGroupAfter(g) },
-      { label: 'New subgroup', run: () => {
+      { label: 'Rename group', run: () => rename(header, g.label, v => { const cur = findGroup(g.id); if (v && cur) { cur.label = v; save(); } }) },
+      { label: 'New group below', run: live(cur => addGroupAfter(cur)) },
+      { label: 'New subgroup', run: live(cur => {
         const sub = { id: newId(), label: 'New group', items: [] };
-        g.items.push(sub);
-        if (folds[g.id]) folds[g.id] = false;
+        cur.items.push(sub);
+        if (folds[cur.id]) folds[cur.id] = false;
         save();
         renameGroupSoon(sub);
-      } },
+      }) },
       '-',
-      { label: 'Move up', disabled: !at || at.index === 0, run: () => move(g, -1) },
-      { label: 'Move down', disabled: !at || at.index === at.siblings.length - 1, run: () => move(g, 1) },
+      { label: 'Move up', disabled: !at || at.index === 0, run: live(cur => move(cur, -1)) },
+      { label: 'Move down', disabled: !at || at.index === at.siblings.length - 1, run: live(cur => move(cur, 1)) },
       '-',
-      { label: 'Delete group (keeps its folders)', run: () => {
-        const pos = locate(g);
+      { label: 'Delete group (keeps its folders)', run: live(cur => {
+        const pos = locate(cur);
         if (!pos) return;
-        pos.siblings.splice(pos.index, 1, ...g.items);
-        delete folds[g.id];
+        pos.siblings.splice(pos.index, 1, ...cur.items);
+        delete folds[cur.id];
         save();
-      } },
+      }) },
     ]);
   }
 
@@ -1949,10 +1966,11 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     // Each action looks its nodes up again when it runs: a save since the menu opened
     // (placeUnplaced makes one) has replaced the tree these were read from.
     const self = () => findFolder(node.folder) || node;
-    const grp = g => findGroup(g.id) || g;
     const targets = [{ heading: 'MOVE TO' }, { label: 'Top level', indent: 0, disabled: !at || !at.parent, run: () => moveTo(self(), null) }];
     for (const { n: g, depth } of groups()) {
-      targets.push({ label: g.label, indent: depth + 1, disabled: at && at.parent === g, run: () => moveTo(self(), grp(g)) });
+      // A group deleted since the menu opened is no target; moving into its old copy
+      // would take the folder out of the tree.
+      targets.push({ label: g.label, indent: depth + 1, disabled: at && at.parent === g, run: () => { const cur = findGroup(g.id); if (cur) moveTo(self(), cur); } });
     }
     showMenu(x, y, [
       { label: 'Rename (short label)', run: () => rename(item, node.label || original, v => { self().label = v && v !== original ? v : undefined; save(); }) },
@@ -1982,12 +2000,13 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // Favorites that are in no group yet (all of them, on a new install) show at the
   // top in Outlook's order. The first time one is edited, all of them join the tree
   // there, in that order, so the list looks the same and each can then be moved.
-  function placeUnplaced() {
+  // A caller about to save anyway passes unsaved, so the edit goes out as one save.
+  function placeUnplaced(unsaved) {
     const hidden = new Set(cfg.hide);
     const names = favoriteNames().filter(n => !hidden.has(n) && !findFolder(n) && !matchesAnyGroup(n));
     if (!names.length) return false;
     cfg.favorites.unshift(...names.map(folder => ({ folder })));
-    save();
+    if (!unsaved) save();
     return true;
   }
 

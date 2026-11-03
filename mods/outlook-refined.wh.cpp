@@ -728,7 +728,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     // would switch these ::-webkit-scrollbar rules off, so neither is set.)
     out.push(`.olkt-tree::-webkit-scrollbar{width:8px}`);
     out.push(`.olkt-tree::-webkit-scrollbar-button{display:none;height:0}`);
-    out.push(`.olkt-tree::-webkit-scrollbar-track{background:transparent}`);
+    // The track stops at the agenda's top edge, so the thumb never slides under it.
+    out.push(`.olkt-tree::-webkit-scrollbar-track{background:transparent;margin-bottom:var(--olkt-cover,0px)}`);
     out.push(`.olkt-tree::-webkit-scrollbar-thumb{background-color:transparent;border:2px solid transparent;border-radius:4px;background-clip:padding-box}`);
     out.push(`.olkt-tree:hover::-webkit-scrollbar-thumb{background-color:var(--colorNeutralStroke1,#666)}`);
     out.push(`.olkt-tree::-webkit-scrollbar-thumb:hover{background-color:var(--colorNeutralStroke1Hover,#888)}`);
@@ -1864,6 +1865,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     const cover = box.height ? Math.round(paneBottom - box.top) + 'px' : '';
     tree.style.paddingBottom = cover;
     tree.style.scrollPaddingBottom = cover;  // keyboard focus scrolls rows clear of it too
+    tree.style.setProperty('--olkt-cover', cover || '0px');
   }
 
   function bindGrip(grip) {
@@ -3127,7 +3129,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       clearInterval(agendaTimer);
       document.querySelectorAll(`${PANE} [role="tree"]`).forEach(n => {
         n.classList.remove('olkt-tree');
-        n.style.paddingBottom = ''; n.style.scrollPaddingBottom = '';
+        n.style.paddingBottom = ''; n.style.scrollPaddingBottom = ''; n.style.removeProperty('--olkt-cover');
       });
       document.querySelectorAll(OURS).forEach(n => n.remove());
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));

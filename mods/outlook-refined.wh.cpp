@@ -395,14 +395,24 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     let onMessage = null;
     // The state is asked for rather than baked into this script: a window that reloads
     // then starts from what is saved now, not from what was saved when it opened. It is
-    // asked for again whenever the window is focused or shown, which is how two open
-    // windows stay in step: a window cannot be edited without being focused first, so it
-    // never saves over a newer edit from another one. The mod answers only the window
-    // that asks. The pane draws with the defaults meanwhile and redraws when it lands;
-    // writes stay shut until then, so nothing saved is ever overwritten unread, and the
-    // state is taken up here rather than behind a timeout, however late it arrives.
-    const ask = () => post('olkt-get\n' + S.key);
+    // asked for again whenever the window is shown or focused, and whenever the pointer
+    // or a drag comes into it, which is how two open windows stay in step: a window is
+    // brought up to date before it can be clicked, typed in or dropped on, so it does not
+    // save over a newer edit from another one. The mod answers only the window that asks.
+    // The pane draws with the defaults meanwhile and redraws when it lands; writes stay
+    // shut until then, so nothing saved is ever overwritten unread, and the state is
+    // taken up here rather than behind a timeout, however late it arrives.
+    let asking = false, again = false, askedAt = 0;
+    const written = new Set();  // keys this page wrote after the open question went out
+    const ask = () => {
+      if (asking) { again = true; return; }
+      asking = true; askedAt = Date.now(); written.clear();
+      post('olkt-get\n' + S.key);
+    };
+    // Pointer and drag entries come in bursts; one question a second is plenty.
+    const askSoon = () => { if (Date.now() - askedAt > 1000) ask(); };
     const onVisible = () => { if (!document.hidden) ask(); };
+    const root = document.documentElement;
     if (channel && S.key) {
       onMessage = ev => {
         const text = typeof ev.data === 'string' ? ev.data : '';
@@ -412,16 +422,25 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
           const saved = JSON.parse(text.slice('olkt-state\n'.length));
           for (const key of STORE_KEYS) if (typeof saved[key] === 'string') next.set(key, saved[key]);
         } catch { return; }
-        // The answer to a focus usually holds nothing new: no redraw then.
-        if (loaded && next.size === mem.size && [...next].every(([k, v]) => mem.get(k) === v)) return;
-        mem.clear();
-        for (const [k, v] of next) mem.set(k, v);
-        loaded = true;
-        try { applyState(); } catch {}
+        asking = false;
+        // A value this page wrote after asking is newer than the answer: keep it.
+        for (const k of written) { if (mem.has(k)) next.set(k, mem.get(k)); else next.delete(k); }
+        written.clear();
+        // An answer usually holds nothing new: no redraw then.
+        const same = loaded && next.size === mem.size && [...next].every(([k, v]) => mem.get(k) === v);
+        if (!same) {
+          mem.clear();
+          for (const [k, v] of next) mem.set(k, v);
+          loaded = true;
+          try { applyState(); } catch {}
+        }
+        if (again) { again = false; ask(); }
       };
       channel.addEventListener('message', onMessage);
       window.addEventListener('focus', ask);
       document.addEventListener('visibilitychange', onVisible);
+      root.addEventListener('mouseenter', askSoon);
+      root.addEventListener('dragenter', askSoon);
       ask();
     }
     return {
@@ -429,16 +448,20 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       setItem: (key, value) => {
         if (!loaded) return;
         mem.set(key, String(value));
+        if (asking) written.add(key);
         post('olkt-set\n' + S.key + '\n' + key + '\n' + String(value));
       },
       removeItem: key => {
         if (!loaded) return;
         mem.delete(key);
+        if (asking) written.add(key);
         post('olkt-set\n' + S.key + '\n' + key + '\n');
       },
       stop() {
         window.removeEventListener('focus', ask);
         document.removeEventListener('visibilitychange', onVisible);
+        root.removeEventListener('mouseenter', askSoon);
+        root.removeEventListener('dragenter', askSoon);
         if (channel && onMessage) { channel.removeEventListener('message', onMessage); onMessage = null; }
       },
     };
@@ -1052,9 +1075,10 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // its lower half to land first inside it. Outlook's own drag of the row is cancelled
   // for the press (the tree's order is ours; a native drop would only reorder Outlook's
   // hidden list). A press without movement stays a normal click.
-  // The drag holds names, not tree nodes: every save comes back from the mod as fresh
-  // state that replaces cfg.favorites, so a node taken at the press can be gone by the
-  // release. Names resolve against whatever tree is current when the drop lands.
+  // The drag holds names, not tree nodes: fresh state from the mod (asked for when the
+  // pointer comes into the window, for one) replaces cfg.favorites, so a node taken at
+  // the press can be gone by the release. Names resolve against whatever tree is
+  // current when the drop lands.
   const movable = name => name && !matchesAnyGroup(name) && !cfg.hide.includes(name);
   function onFavPress(ev) {
     const item = ev.button === 0 && ev.target.closest('[role="treeitem"]');
@@ -1925,7 +1949,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   function renameGroupSoon(g) {
     requestAnimationFrame(() => {
       const h = document.querySelector(`.olkt-head[data-group=${q(g.id)}]`);
-      // By id at commit: the save that created the group has come back as a new tree.
+      // By id at commit: fresh state may have replaced the tree while the box was open.
       if (h) rename(h, g.label, v => { const live = findGroup(g.id); if (v && live) { live.label = v; save(); } });
     });
   }
@@ -1951,8 +1975,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
 
   function groupMenu(g, header, x, y) {
     const at = locate(g);
-    // Each action finds the group by id when it runs; a save since the menu opened has
-    // replaced the tree, and a group another window deleted is left alone.
+    // Each action finds the group by id when it runs; fresh state since the menu opened
+    // may have replaced the tree, and a group another window deleted is left alone.
     const live = fn => () => { const cur = findGroup(g.id); if (cur) fn(cur); };
     showMenu(x, y, [
       { label: 'Rename group', run: () => rename(header, g.label, v => { const cur = findGroup(g.id); if (v && cur) { cur.label = v; save(); } }) },
@@ -1981,8 +2005,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   function folderMenu(node, item, x, y) {
     const at = locate(node);
     const original = (item.getAttribute('title') || node.folder).replace(/ - [\d,]+ items?( \([\d,]+ unread\))?$/, '');
-    // Each action looks its nodes up again when it runs: a save since the menu opened
-    // (placeUnplaced makes one) has replaced the tree these were read from.
+    // Each action looks its nodes up again when it runs: fresh state since the menu
+    // opened may have replaced the tree these were read from.
     const self = () => findFolder(node.folder) || node;
     const targets = [{ heading: 'MOVE TO' }, { label: 'Top level', indent: 0, disabled: !at || !at.parent, run: () => moveTo(self(), null) }];
     for (const { n: g, depth } of groups()) {

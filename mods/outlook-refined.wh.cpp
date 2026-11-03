@@ -659,7 +659,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     };
     emit(cfg.favorites, 0, false);
 
-    out.push(`.olkt-head{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:8px;height:26px;width:100%;cursor:pointer;font-size:12px;font-weight:600;letter-spacing:.04em;color:var(--colorNeutralForeground3,#a3a3a3);border-radius:4px}`);
+    out.push(`.olkt-head{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:8px;height:calc(${size} * 1.85);width:100%;cursor:pointer;font-size:calc(${size} * .85);font-weight:600;letter-spacing:.04em;color:var(--colorNeutralForeground3,#a3a3a3);border-radius:4px}`);
     out.push(`.olkt-head:hover{background:var(--colorNeutralBackground1Hover,#333);color:var(--colorNeutralForeground1,#e6e6e6)}`);
     out.push(`.olkt-head:focus-visible{outline:2px solid var(--colorBrandStroke1,#4aa3f0)}`);
     out.push(`.olkt-head .olkt-chev{flex:none;width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg) translate(-2px,-1px)}`);
@@ -690,7 +690,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     out.push(`.olkt-feed{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:transparent transparent}`);
     out.push(`.olkt-feed:hover{scrollbar-color:var(--colorNeutralStroke1,#555) transparent}`);
     out.push(`.olkt-agenda .olkt-head.olkt-allday{height:22px;margin-left:12px;width:calc(100% - 12px);font-size:11px;letter-spacing:0;font-weight:400}`);
-    out.push(`.olkt-agenda .olkt-head{margin-top:2px}`);
+    out.push(`.olkt-agenda .olkt-head{margin-top:2px;font-size:12px;height:26px}`);
     out.push(`.olkt-month{flex:none;padding:4px 0 6px 12px}`);
     out.push(`.olkt-month-bar{display:flex;align-items:center;justify-content:space-between;padding:0 0 4px}`);
     out.push(`.olkt-month-title{all:unset;cursor:pointer;flex:1;text-align:center;font-size:12px;font-weight:700;color:var(--colorNeutralForeground1,#e6e6e6)}`);

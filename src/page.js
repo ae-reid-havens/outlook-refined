@@ -177,30 +177,36 @@
     const post = text => { try { channel.postMessage(text); } catch {} };
     let loaded = false;
     let onMessage = null;
-    let last = '';
     // The state is asked for rather than baked into this script: a window that reloads
-    // then starts from what is saved now, not from what was saved when it opened. The
-    // mod sends it again whenever any window saves, which is how two open windows stay
-    // in step. The pane draws with the defaults meanwhile and redraws when it lands;
+    // then starts from what is saved now, not from what was saved when it opened. It is
+    // asked for again whenever the window is focused or shown, which is how two open
+    // windows stay in step: a window cannot be edited without being focused first, so it
+    // never saves over a newer edit from another one. The mod answers only the window
+    // that asks. The pane draws with the defaults meanwhile and redraws when it lands;
     // writes stay shut until then, so nothing saved is ever overwritten unread, and the
     // state is taken up here rather than behind a timeout, however late it arrives.
+    const ask = () => post('olkt-get\n' + S.key);
+    const onVisible = () => { if (!document.hidden) ask(); };
     if (channel && S.key) {
       onMessage = ev => {
         const text = typeof ev.data === 'string' ? ev.data : '';
         if (!text.startsWith('olkt-state\n')) return;
-        const body = text.slice('olkt-state\n'.length);
-        if (body === last) return;  // nothing changed since the last one; no redraw
-        last = body;
+        const next = new Map();
         try {
-          const saved = JSON.parse(body);
-          mem.clear();
-          for (const key of STORE_KEYS) if (typeof saved[key] === 'string') mem.set(key, saved[key]);
+          const saved = JSON.parse(text.slice('olkt-state\n'.length));
+          for (const key of STORE_KEYS) if (typeof saved[key] === 'string') next.set(key, saved[key]);
         } catch { return; }
+        // The answer to a focus usually holds nothing new: no redraw then.
+        if (loaded && next.size === mem.size && [...next].every(([k, v]) => mem.get(k) === v)) return;
+        mem.clear();
+        for (const [k, v] of next) mem.set(k, v);
         loaded = true;
         try { applyState(); } catch {}
       };
       channel.addEventListener('message', onMessage);
-      post('olkt-get\n' + S.key);
+      window.addEventListener('focus', ask);
+      document.addEventListener('visibilitychange', onVisible);
+      ask();
     }
     return {
       getItem: key => (mem.has(key) ? mem.get(key) : null),
@@ -214,7 +220,11 @@
         mem.delete(key);
         post('olkt-set\n' + S.key + '\n' + key + '\n');
       },
-      stop() { if (channel && onMessage) { channel.removeEventListener('message', onMessage); onMessage = null; } },
+      stop() {
+        window.removeEventListener('focus', ask);
+        document.removeEventListener('visibilitychange', onVisible);
+        if (channel && onMessage) { channel.removeEventListener('message', onMessage); onMessage = null; }
+      },
     };
   })();
   const stored = (key, fallback) => { try { const v = JSON.parse(store.getItem(key)); return Array.isArray(v) ? v : fallback; } catch { return fallback; } };
@@ -1802,8 +1812,6 @@
     return true;
   }
 
-  // Another Outlook window saved its edits: take them, so this window's next save
-  // cannot write back an older tree.
   // ==== calendar module ====
   // Left list: one row per account (the expanded account heading and "Show all" go, and
   // each account's "Calendar" row shows the account's short label); a narrower pane.

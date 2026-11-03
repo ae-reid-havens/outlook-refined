@@ -38,7 +38,7 @@ stored, logged or sent anywhere else, and no credential is written down.
 pane and card sizes are saved in Windhawk's own storage for this mod, so they
 leave when the mod does. State an earlier version wrote into Outlook's own local
 storage is moved across the first time this one runs. Other Outlook windows
-that are already open pick up a change when they are reopened.
+that are already open pick up a change when they are next focused.
 
 **Folder pane:** Favorites in groups that fold (right-click a group header for
 its menu, drag a favorite to move it, Shift+right-click it to rename or move
@@ -175,6 +175,8 @@ the parts that depend on this most.
 #include <urlmon.h>
 
 #include <atomic>
+#include <cstdarg>
+#include <cstdio>
 #include <map>
 #include <string>
 #include <string_view>
@@ -391,30 +393,36 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     const post = text => { try { channel.postMessage(text); } catch {} };
     let loaded = false;
     let onMessage = null;
-    let last = '';
     // The state is asked for rather than baked into this script: a window that reloads
-    // then starts from what is saved now, not from what was saved when it opened. The
-    // mod sends it again whenever any window saves, which is how two open windows stay
-    // in step. The pane draws with the defaults meanwhile and redraws when it lands;
+    // then starts from what is saved now, not from what was saved when it opened. It is
+    // asked for again whenever the window is focused or shown, which is how two open
+    // windows stay in step: a window cannot be edited without being focused first, so it
+    // never saves over a newer edit from another one. The mod answers only the window
+    // that asks. The pane draws with the defaults meanwhile and redraws when it lands;
     // writes stay shut until then, so nothing saved is ever overwritten unread, and the
     // state is taken up here rather than behind a timeout, however late it arrives.
+    const ask = () => post('olkt-get\n' + S.key);
+    const onVisible = () => { if (!document.hidden) ask(); };
     if (channel && S.key) {
       onMessage = ev => {
         const text = typeof ev.data === 'string' ? ev.data : '';
         if (!text.startsWith('olkt-state\n')) return;
-        const body = text.slice('olkt-state\n'.length);
-        if (body === last) return;  // nothing changed since the last one; no redraw
-        last = body;
+        const next = new Map();
         try {
-          const saved = JSON.parse(body);
-          mem.clear();
-          for (const key of STORE_KEYS) if (typeof saved[key] === 'string') mem.set(key, saved[key]);
+          const saved = JSON.parse(text.slice('olkt-state\n'.length));
+          for (const key of STORE_KEYS) if (typeof saved[key] === 'string') next.set(key, saved[key]);
         } catch { return; }
+        // The answer to a focus usually holds nothing new: no redraw then.
+        if (loaded && next.size === mem.size && [...next].every(([k, v]) => mem.get(k) === v)) return;
+        mem.clear();
+        for (const [k, v] of next) mem.set(k, v);
         loaded = true;
         try { applyState(); } catch {}
       };
       channel.addEventListener('message', onMessage);
-      post('olkt-get\n' + S.key);
+      window.addEventListener('focus', ask);
+      document.addEventListener('visibilitychange', onVisible);
+      ask();
     }
     return {
       getItem: key => (mem.has(key) ? mem.get(key) : null),
@@ -428,7 +436,11 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
         mem.delete(key);
         post('olkt-set\n' + S.key + '\n' + key + '\n');
       },
-      stop() { if (channel && onMessage) { channel.removeEventListener('message', onMessage); onMessage = null; } },
+      stop() {
+        window.removeEventListener('focus', ask);
+        document.removeEventListener('visibilitychange', onVisible);
+        if (channel && onMessage) { channel.removeEventListener('message', onMessage); onMessage = null; }
+      },
     };
   })();
   const stored = (key, fallback) => { try { const v = JSON.parse(store.getItem(key)); return Array.isArray(v) ? v : fallback; } catch { return fallback; } };
@@ -2016,8 +2028,6 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     return true;
   }
 
-  // Another Outlook window saved its edits: take them, so this window's next save
-  // cannot write back an older tree.
   // ==== calendar module ====
   // Left list: one row per account (the expanded account heading and "Show all" go, and
   // each account's "Calendar" row shows the account's short label); a narrower pane.
@@ -3214,9 +3224,10 @@ void AddList(std::wstring& json, PCWSTR name, std::initializer_list<PCWSTR> fiel
 
 // Edits made inside Outlook (groups, renames, folds, account order, pane and card
 // sizes) are the mod's state, not Outlook's, so they live in Windhawk's storage and
-// leave with the mod. The page asks for them over the WebView's message channel and
-// sends each change back the same way, and every window is told when one lands (see
-// MessageReceived and BroadcastState).
+// leave with the mod. The page asks for them over the WebView's message channel, again
+// each time its window is focused, and sends each change back the same way (see
+// MessageReceived). Only the asking window is ever answered, on its own thread: nothing
+// is pushed to other WebViews, which may be showing third-party pages.
 constexpr PCWSTR kStoreKeys[] = {
     L"olkt-favorites", L"olkt-account-order", L"olkt-folds",        L"olkt-pane-width",
     L"olkt-agenda-height", L"olkt-other-height", L"olkt-other-split", L"olkt-other-folds",
@@ -3400,9 +3411,6 @@ void StoreValue(std::wstring_view name, std::wstring_view text) {
     ReleaseSRWLockExclusive(&g_storeLock);
 }
 
-// Defined with the thread helpers it needs, at the end of the file.
-void BroadcastState();
-
 // A line the page sent, once the sender has been vouched for:
 //   olkt-get <key>                 asks for the saved state, answered on the same channel
 //   olkt-set <key> <name> <value>  writes one value; an empty value deletes it
@@ -3425,10 +3433,8 @@ void HandleMessage(IUnknown* sender, PCWSTR text) {
         message.remove_prefix(line + 1);
         size_t name = message.find(L'\n');
         if (name == std::wstring_view::npos) return;
+        // Stored only. Another open window takes it up when it is next focused, by asking.
         StoreValue(message.substr(0, name), message.substr(name + 1));
-        // Every window, not only the one that wrote: a second window would otherwise go
-        // on showing what it read at startup and then save that over this.
-        BroadcastState();
         return;
     }
     std::wstring answer = L"olkt-state\n" + StateJson();
@@ -3895,36 +3901,6 @@ void WINAPI ReleaseViewOnThread(PVOID param) {
     ReleaseView(*(const PageView*)param, true);
 }
 
-struct StatePost {
-    IUnknown* webview;
-    const wchar_t* text;
-};
-
-void WINAPI PostStateOnThread(PVOID param) {
-    auto* post = (StatePost*)param;
-    using Post_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, LPCWSTR);
-    reinterpret_cast<Post_t>(Slot(post->webview, kWebView_PostWebMessageAsString))(post->webview, post->text);
-}
-
-// Sends the state every window now shares, each on its own thread. The list is copied
-// under the lock and the WebViews held across the sends, so a window closing half way
-// through cannot pull one out from under us.
-void BroadcastState() {
-    std::wstring text = L"olkt-state\n" + StateJson();
-    std::vector<PageView> views;
-    AcquireSRWLockShared(&g_viewsLock);
-    for (const PageView& view : g_views) {
-        view.webview->AddRef();
-        views.push_back(view);
-    }
-    ReleaseSRWLockShared(&g_viewsLock);
-    for (const PageView& view : views) {
-        StatePost post{view.webview, text.c_str()};
-        RunForView(view, PostStateOnThread, &post);
-        view.webview->Release();
-    }
-}
-
 // Runs while the hooks are still in place, so every open Outlook window gives the script
 // back before the DLL goes: the styling, the timers and the wrapped fetch all stop at
 // once, with no restart needed.
@@ -3960,7 +3936,7 @@ void Wh_ModSettingsChanged() {
 }
 
 // Runs after Windhawk has removed the hooks, so no new handlers appear. Waits up to
-// 5 seconds for WebView2 to release the ones it still holds before the DLL unloads.
+// two minutes for WebView2 to release the ones it still holds before the DLL unloads.
 void Wh_ModUninit() {
     // Every view was torn down on its own thread above, so what is left is completion
     // handlers for windows that were being created during the disable. WebView2 lets

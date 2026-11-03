@@ -186,46 +186,49 @@
     // The pane draws with the defaults meanwhile and redraws when it lands; writes stay
     // shut until then, so nothing saved is ever overwritten unread, and the state is
     // taken up here rather than behind a timeout, however late it arrives.
-    let asking = false, again = false, askedAt = 0;
-    const written = new Set();  // keys this page wrote after the open question went out
+    let asking = false, askedAt = 0, answeredAt = 0;
+    const written = new Set();  // keys this page wrote while a question was open
     const ask = () => {
-      if (asking) { again = true; return; }
-      asking = true; askedAt = Date.now(); written.clear();
+      // One question at a time, but an answer that never came must not stop the window
+      // asking for good: after two seconds the open question counts as lost.
+      if (asking && Date.now() - askedAt < 2000) return;
+      asking = true; askedAt = Date.now();
       post('olkt-get\n' + S.key);
     };
-    // Pointer and drag entries come in bursts; one question a second is plenty.
-    const askSoon = () => { if (Date.now() - askedAt > 1000) ask(); };
-    const onVisible = () => { if (!document.hidden) ask(); };
+    // A focus or show right behind a pointer entry needs no second question.
+    const askFresh = () => { if (Date.now() - answeredAt > 500) ask(); };
+    const onVisible = () => { if (!document.hidden) askFresh(); };
+    // Only an entry from outside the window counts, not moves between its own elements.
+    const onEnter = ev => { if (!ev.relatedTarget) ask(); };
     if (channel && S.key) {
       onMessage = ev => {
         const text = typeof ev.data === 'string' ? ev.data : '';
         if (!text.startsWith('olkt-state\n')) return;
+        asking = false;
+        answeredAt = Date.now();
         const next = new Map();
         try {
           const saved = JSON.parse(text.slice('olkt-state\n'.length));
           for (const key of STORE_KEYS) if (typeof saved[key] === 'string') next.set(key, saved[key]);
-        } catch { return; }
-        asking = false;
+        } catch { written.clear(); return; }
         // A value this page wrote after asking is newer than the answer: keep it.
         for (const k of written) { if (mem.has(k)) next.set(k, mem.get(k)); else next.delete(k); }
         written.clear();
         // An answer usually holds nothing new: no redraw then.
         const same = loaded && next.size === mem.size && [...next].every(([k, v]) => mem.get(k) === v);
-        if (!same) {
-          mem.clear();
-          for (const [k, v] of next) mem.set(k, v);
-          loaded = true;
-          try { applyState(); } catch {}
-        }
-        if (again) { again = false; ask(); }
+        if (same) return;
+        mem.clear();
+        for (const [k, v] of next) mem.set(k, v);
+        loaded = true;
+        try { applyState(); } catch {}
       };
       channel.addEventListener('message', onMessage);
-      window.addEventListener('focus', ask);
+      window.addEventListener('focus', askFresh);
       document.addEventListener('visibilitychange', onVisible);
       // On the document, which exists from the start; this script runs before the page
-      // has an html element. mouseover bubbles up to it as the pointer comes in.
-      document.addEventListener('mouseover', askSoon, true);
-      document.addEventListener('dragenter', askSoon, true);
+      // has an html element. Both events bubble up to it as the pointer or a drag comes in.
+      document.addEventListener('mouseover', onEnter, true);
+      document.addEventListener('dragenter', onEnter, true);
       ask();
     }
     return {
@@ -243,10 +246,10 @@
         post('olkt-set\n' + S.key + '\n' + key + '\n');
       },
       stop() {
-        window.removeEventListener('focus', ask);
+        window.removeEventListener('focus', askFresh);
         document.removeEventListener('visibilitychange', onVisible);
-        document.removeEventListener('mouseover', askSoon, true);
-        document.removeEventListener('dragenter', askSoon, true);
+        document.removeEventListener('mouseover', onEnter, true);
+        document.removeEventListener('dragenter', onEnter, true);
         if (channel && onMessage) { channel.removeEventListener('message', onMessage); onMessage = null; }
       },
     };

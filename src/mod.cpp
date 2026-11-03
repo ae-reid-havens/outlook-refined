@@ -38,7 +38,7 @@ stored, logged or sent anywhere else, and no credential is written down.
 pane and card sizes are saved in Windhawk's own storage for this mod, so they
 leave when the mod does. State an earlier version wrote into Outlook's own local
 storage is moved across the first time this one runs. Other Outlook windows
-that are already open pick up a change when they are next focused.
+that are already open pick up a change as soon as you move into them.
 
 **Folder pane:** Favorites in groups that fold (right-click a group header for
 its menu, drag a favorite to move it, Shift+right-click it to rename or move
@@ -293,8 +293,8 @@ void AddList(std::wstring& json, PCWSTR name, std::initializer_list<PCWSTR> fiel
 // Edits made inside Outlook (groups, renames, folds, account order, pane and card
 // sizes) are the mod's state, not Outlook's, so they live in Windhawk's storage and
 // leave with the mod. The page asks for them over the WebView's message channel, again
-// each time its window is focused, and sends each change back the same way (see
-// MessageReceived). Only the asking window is ever answered, on its own thread: nothing
+// whenever its window is shown or focused or the pointer comes into it, and sends each
+// change back the same way (see MessageReceived). Only the asking window is ever answered, on its own thread: nothing
 // is pushed to other WebViews, which may be showing third-party pages.
 constexpr PCWSTR kStoreKeys[] = {
     L"olkt-favorites", L"olkt-account-order", L"olkt-folds",        L"olkt-pane-width",
@@ -501,7 +501,8 @@ void HandleMessage(IUnknown* sender, PCWSTR text) {
         message.remove_prefix(line + 1);
         size_t name = message.find(L'\n');
         if (name == std::wstring_view::npos) return;
-        // Stored only. Another open window takes it up when it is next focused, by asking.
+        // Stored only. Another open window takes it up by asking, when it is shown or
+        // focused or the pointer or a drag comes into it.
         StoreValue(message.substr(0, name), message.substr(name + 1));
         return;
     }

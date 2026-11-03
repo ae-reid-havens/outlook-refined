@@ -132,7 +132,7 @@ you can place moves it within Favorites, so to move the folder itself into anoth
 it in its account tree instead. Favorites that the Outgoing and Junk groups collect keep
 Outlook's own drag.
 
-Other Outlook windows that are already open pick up such a change when they are next focused.
+Other Outlook windows that are already open pick up such a change as soon as you move into them.
 
 ## Privacy
 

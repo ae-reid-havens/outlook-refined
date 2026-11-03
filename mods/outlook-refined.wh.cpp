@@ -38,7 +38,7 @@ stored, logged or sent anywhere else, and no credential is written down.
 pane and card sizes are saved in Windhawk's own storage for this mod, so they
 leave when the mod does. State an earlier version wrote into Outlook's own local
 storage is moved across the first time this one runs. Other Outlook windows
-that are already open pick up a change when they are next focused.
+that are already open pick up a change as soon as you move into them.
 
 **Folder pane:** Favorites in groups that fold (right-click a group header for
 its menu, drag a favorite to move it, Shift+right-click it to rename or move
@@ -402,46 +402,49 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     // The pane draws with the defaults meanwhile and redraws when it lands; writes stay
     // shut until then, so nothing saved is ever overwritten unread, and the state is
     // taken up here rather than behind a timeout, however late it arrives.
-    let asking = false, again = false, askedAt = 0;
-    const written = new Set();  // keys this page wrote after the open question went out
+    let asking = false, askedAt = 0, answeredAt = 0;
+    const written = new Set();  // keys this page wrote while a question was open
     const ask = () => {
-      if (asking) { again = true; return; }
-      asking = true; askedAt = Date.now(); written.clear();
+      // One question at a time, but an answer that never came must not stop the window
+      // asking for good: after two seconds the open question counts as lost.
+      if (asking && Date.now() - askedAt < 2000) return;
+      asking = true; askedAt = Date.now();
       post('olkt-get\n' + S.key);
     };
-    // Pointer and drag entries come in bursts; one question a second is plenty.
-    const askSoon = () => { if (Date.now() - askedAt > 1000) ask(); };
-    const onVisible = () => { if (!document.hidden) ask(); };
+    // A focus or show right behind a pointer entry needs no second question.
+    const askFresh = () => { if (Date.now() - answeredAt > 500) ask(); };
+    const onVisible = () => { if (!document.hidden) askFresh(); };
+    // Only an entry from outside the window counts, not moves between its own elements.
+    const onEnter = ev => { if (!ev.relatedTarget) ask(); };
     if (channel && S.key) {
       onMessage = ev => {
         const text = typeof ev.data === 'string' ? ev.data : '';
         if (!text.startsWith('olkt-state\n')) return;
+        asking = false;
+        answeredAt = Date.now();
         const next = new Map();
         try {
           const saved = JSON.parse(text.slice('olkt-state\n'.length));
           for (const key of STORE_KEYS) if (typeof saved[key] === 'string') next.set(key, saved[key]);
-        } catch { return; }
-        asking = false;
+        } catch { written.clear(); return; }
         // A value this page wrote after asking is newer than the answer: keep it.
         for (const k of written) { if (mem.has(k)) next.set(k, mem.get(k)); else next.delete(k); }
         written.clear();
         // An answer usually holds nothing new: no redraw then.
         const same = loaded && next.size === mem.size && [...next].every(([k, v]) => mem.get(k) === v);
-        if (!same) {
-          mem.clear();
-          for (const [k, v] of next) mem.set(k, v);
-          loaded = true;
-          try { applyState(); } catch {}
-        }
-        if (again) { again = false; ask(); }
+        if (same) return;
+        mem.clear();
+        for (const [k, v] of next) mem.set(k, v);
+        loaded = true;
+        try { applyState(); } catch {}
       };
       channel.addEventListener('message', onMessage);
-      window.addEventListener('focus', ask);
+      window.addEventListener('focus', askFresh);
       document.addEventListener('visibilitychange', onVisible);
       // On the document, which exists from the start; this script runs before the page
-      // has an html element. mouseover bubbles up to it as the pointer comes in.
-      document.addEventListener('mouseover', askSoon, true);
-      document.addEventListener('dragenter', askSoon, true);
+      // has an html element. Both events bubble up to it as the pointer or a drag comes in.
+      document.addEventListener('mouseover', onEnter, true);
+      document.addEventListener('dragenter', onEnter, true);
       ask();
     }
     return {
@@ -459,10 +462,10 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
         post('olkt-set\n' + S.key + '\n' + key + '\n');
       },
       stop() {
-        window.removeEventListener('focus', ask);
+        window.removeEventListener('focus', askFresh);
         document.removeEventListener('visibilitychange', onVisible);
-        document.removeEventListener('mouseover', askSoon, true);
-        document.removeEventListener('dragenter', askSoon, true);
+        document.removeEventListener('mouseover', onEnter, true);
+        document.removeEventListener('dragenter', onEnter, true);
         if (channel && onMessage) { channel.removeEventListener('message', onMessage); onMessage = null; }
       },
     };
@@ -3250,8 +3253,8 @@ void AddList(std::wstring& json, PCWSTR name, std::initializer_list<PCWSTR> fiel
 // Edits made inside Outlook (groups, renames, folds, account order, pane and card
 // sizes) are the mod's state, not Outlook's, so they live in Windhawk's storage and
 // leave with the mod. The page asks for them over the WebView's message channel, again
-// each time its window is focused, and sends each change back the same way (see
-// MessageReceived). Only the asking window is ever answered, on its own thread: nothing
+// whenever its window is shown or focused or the pointer comes into it, and sends each
+// change back the same way (see MessageReceived). Only the asking window is ever answered, on its own thread: nothing
 // is pushed to other WebViews, which may be showing third-party pages.
 constexpr PCWSTR kStoreKeys[] = {
     L"olkt-favorites", L"olkt-account-order", L"olkt-folds",        L"olkt-pane-width",
@@ -3458,7 +3461,8 @@ void HandleMessage(IUnknown* sender, PCWSTR text) {
         message.remove_prefix(line + 1);
         size_t name = message.find(L'\n');
         if (name == std::wstring_view::npos) return;
-        // Stored only. Another open window takes it up when it is next focused, by asking.
+        // Stored only. Another open window takes it up by asking, when it is shown or
+        // focused or the pointer or a drag comes into it.
         StoreValue(message.substr(0, name), message.substr(name + 1));
         return;
     }

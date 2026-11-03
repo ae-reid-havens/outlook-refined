@@ -465,6 +465,8 @@
     out.push(`.olkt-menu button:disabled{opacity:.4;cursor:default}`);
     out.push(`.olkt-menu .olkt-sep{height:1px;margin:4px 6px;background:var(--colorNeutralStroke2,#3a3a3a)}`);
     out.push(`.olkt-menu .olkt-sub{padding:6px 12px 2px;font-size:11px;letter-spacing:.06em;color:var(--colorNeutralForeground3,#a3a3a3)}`);
+    out.push(`.olkt-tree{box-sizing:border-box!important;overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:thin}`);
+    out.push(`.olkt-tree > .customScrollBar{flex:none!important;height:auto!important;max-height:none!important;min-height:0!important;overflow:visible!important}`);
     out.push(`.olkt-agenda{position:absolute;left:0;right:2px;bottom:0;z-index:15;box-sizing:border-box;display:flex;flex-direction:column;padding:0 8px 6px 6px;font-size:12px;color:var(--colorNeutralForeground1,#e6e6e6)}`);
     // Outlook hides the pane by sliding its own tree out; ours would stay behind.
     out.push(`body:has(button[aria-label="Show navigation pane"]) ${PANE} :is(.olkt-agenda,.olkt-resize){display:none}`);
@@ -1550,7 +1552,8 @@
 
   // The folder tree: one role="tree" holding two scroll areas, Favorites (which Outlook
   // caps at clamp(20%, 462px, 70%) of the tree) and the account trees below it (which
-  // take the rest). Both carry Outlook's customScrollBar class.
+  // take the rest). Both carry Outlook's customScrollBar class. With the agenda on, the
+  // olkt-tree class turns the two into one list that the tree itself scrolls.
   function treeBox(pane) {
     const list = favoritesList();
     return (list && list.closest('[role="tree"]')) || pane.querySelector('[role="tree"]');
@@ -1577,26 +1580,21 @@
       h = Math.max(150, Math.min(max, Math.round(pane.getBoundingClientRect().bottom - treeEnd - 12)));
     }
     agendaEl.style.height = h ? h + 'px' : '';
-    // Fit the whole tree into the space above the agenda and let Outlook share it out:
-    // Favorites' clamp() is a share of the tree's height, so it shrinks with it, and the
-    // account trees take the rest. Capping only one scroll area left the other running
-    // under the agenda, and on a short pane put the account trees wholly behind it. Any
-    // scroll area that still reaches past the agenda's top is then capped on its own.
+    // The tree scrolls as one, at the pane's full height: Favorites and the account trees
+    // keep their own sizes however tall the agenda is, the agenda covers the bottom of the
+    // pane, and bottom padding as tall as the agenda lets the last folders scroll up above
+    // it. (Fitting the tree into the space above the agenda squeezed Favorites each time
+    // the agenda grew; capping one scroll area left the other behind the agenda.)
     const tree = treeBox(pane);
     if (!tree) return;
-    const areas = [...tree.querySelectorAll('.customScrollBar')];
-    for (const s of areas) { s.style.paddingBottom = ''; s.style.maxHeight = ''; s.style.minHeight = ''; }
+    tree.classList.add('olkt-tree');
+    const paneBottom = pane.getBoundingClientRect().bottom;
     const box = agendaEl.getBoundingClientRect();
-    // A hidden agenda (navigation pane collapsed, or printing) has no edge to fit under.
-    if (!box.height) { tree.style.height = ''; return; }
-    tree.style.height = Math.max(60, Math.round(box.top - tree.getBoundingClientRect().top)) + 'px';
-    for (const s of areas) {
-      const r = s.getBoundingClientRect();
-      if (!r.height || r.bottom <= box.top + 1) continue;
-      // Outlook's own min-height would beat the cap.
-      s.style.minHeight = '0px';
-      s.style.maxHeight = Math.max(40, Math.round(box.top - r.top)) + 'px';
-    }
+    tree.style.maxHeight = Math.round(paneBottom - tree.getBoundingClientRect().top) + 'px';
+    // A hidden agenda (navigation pane collapsed, or printing) covers nothing.
+    const cover = box.height ? Math.round(paneBottom - box.top) + 'px' : '';
+    tree.style.paddingBottom = cover;
+    tree.style.scrollPaddingBottom = cover;  // keyboard focus scrolls rows clear of it too
   }
 
   function bindGrip(grip) {
@@ -2861,7 +2859,10 @@
       if (acctListBound) acctListBound.removeEventListener('pointerdown', onAcctPress, true);
       clearInterval(agendaTimer);
       document.querySelectorAll(`${PANE} .customScrollBar`).forEach(n => { n.style.paddingBottom = ''; n.style.maxHeight = ''; n.style.minHeight = ''; });
-      document.querySelectorAll(`${PANE} [role="tree"]`).forEach(n => { n.style.height = ''; });
+      document.querySelectorAll(`${PANE} [role="tree"]`).forEach(n => {
+        n.classList.remove('olkt-tree');
+        n.style.maxHeight = ''; n.style.paddingBottom = ''; n.style.scrollPaddingBottom = '';
+      });
       document.querySelectorAll(OURS).forEach(n => n.remove());
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));
       for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked', 'data-olkt-quoted', 'data-olkt-collapsed'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));

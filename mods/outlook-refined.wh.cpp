@@ -1797,15 +1797,19 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     // under the agenda, and on a short pane put the account trees wholly behind it. Any
     // scroll area that still reaches past the agenda's top is then capped on its own.
     const tree = treeBox(pane);
-    if (tree) {
-      const edge = agendaEl.getBoundingClientRect().top;
-      tree.style.height = Math.max(60, Math.round(edge - tree.getBoundingClientRect().top)) + 'px';
-      for (const s of tree.querySelectorAll('.customScrollBar')) {
-        s.style.paddingBottom = '';
-        s.style.maxHeight = '';
-        const r = s.getBoundingClientRect();
-        if (r.height && r.bottom > edge + 1) s.style.maxHeight = Math.max(40, Math.round(edge - r.top)) + 'px';
-      }
+    if (!tree) return;
+    const areas = [...tree.querySelectorAll('.customScrollBar')];
+    for (const s of areas) { s.style.paddingBottom = ''; s.style.maxHeight = ''; s.style.minHeight = ''; }
+    const box = agendaEl.getBoundingClientRect();
+    // A hidden agenda (navigation pane collapsed, or printing) has no edge to fit under.
+    if (!box.height) { tree.style.height = ''; return; }
+    tree.style.height = Math.max(60, Math.round(box.top - tree.getBoundingClientRect().top)) + 'px';
+    for (const s of areas) {
+      const r = s.getBoundingClientRect();
+      if (!r.height || r.bottom <= box.top + 1) continue;
+      // Outlook's own min-height would beat the cap.
+      s.style.minHeight = '0px';
+      s.style.maxHeight = Math.max(40, Math.round(box.top - r.top)) + 'px';
     }
   }
 
@@ -2961,11 +2965,16 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     list.removeEventListener('pointerup', onListRelease, true);
     list.removeEventListener('pointerdown', onFavPress, true);
   }
+  let agendaShown = false;
   function ensure() {
     ensureCalendar();
     ensureReading();
     ensureAgendaData();
     ensureOther();
+    // The agenda hides with a collapsed navigation pane; the tree is fitted again when
+    // it comes back, not a minute later.
+    const shown = !!(agendaEl && agendaEl.isConnected && agendaEl.offsetParent);
+    if (shown !== agendaShown) { agendaShown = shown; layoutAgenda(); }
     const list = favoritesList();
     if (!list) return;
     if (!list.hasAttribute('data-olkt-favs')) list.setAttribute('data-olkt-favs', '');
@@ -3065,7 +3074,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       if (boundList) unbindList(boundList);
       if (acctListBound) acctListBound.removeEventListener('pointerdown', onAcctPress, true);
       clearInterval(agendaTimer);
-      document.querySelectorAll(`${PANE} .customScrollBar`).forEach(n => { n.style.paddingBottom = ''; n.style.maxHeight = ''; });
+      document.querySelectorAll(`${PANE} .customScrollBar`).forEach(n => { n.style.paddingBottom = ''; n.style.maxHeight = ''; n.style.minHeight = ''; });
       document.querySelectorAll(`${PANE} [role="tree"]`).forEach(n => { n.style.height = ''; });
       document.querySelectorAll(OURS).forEach(n => n.remove());
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));

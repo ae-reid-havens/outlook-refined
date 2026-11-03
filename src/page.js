@@ -196,7 +196,6 @@
     // Pointer and drag entries come in bursts; one question a second is plenty.
     const askSoon = () => { if (Date.now() - askedAt > 1000) ask(); };
     const onVisible = () => { if (!document.hidden) ask(); };
-    const root = document.documentElement;
     if (channel && S.key) {
       onMessage = ev => {
         const text = typeof ev.data === 'string' ? ev.data : '';
@@ -223,8 +222,10 @@
       channel.addEventListener('message', onMessage);
       window.addEventListener('focus', ask);
       document.addEventListener('visibilitychange', onVisible);
-      root.addEventListener('mouseenter', askSoon);
-      root.addEventListener('dragenter', askSoon);
+      // On the document, which exists from the start; this script runs before the page
+      // has an html element. mouseover bubbles up to it as the pointer comes in.
+      document.addEventListener('mouseover', askSoon, true);
+      document.addEventListener('dragenter', askSoon, true);
       ask();
     }
     return {
@@ -244,8 +245,8 @@
       stop() {
         window.removeEventListener('focus', ask);
         document.removeEventListener('visibilitychange', onVisible);
-        root.removeEventListener('mouseenter', askSoon);
-        root.removeEventListener('dragenter', askSoon);
+        document.removeEventListener('mouseover', askSoon, true);
+        document.removeEventListener('dragenter', askSoon, true);
         if (channel && onMessage) { channel.removeEventListener('message', onMessage); onMessage = null; }
       },
     };

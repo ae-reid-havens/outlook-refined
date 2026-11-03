@@ -293,9 +293,10 @@ void AddList(std::wstring& json, PCWSTR name, std::initializer_list<PCWSTR> fiel
 // Edits made inside Outlook (groups, renames, folds, account order, pane and card
 // sizes) are the mod's state, not Outlook's, so they live in Windhawk's storage and
 // leave with the mod. The page asks for them over the WebView's message channel, again
-// whenever its window is shown or focused or the pointer comes into it, and sends each
-// change back the same way (see MessageReceived). Only the asking window is ever answered, on its own thread: nothing
-// is pushed to other WebViews, which may be showing third-party pages.
+// whenever its window is shown or focused or the pointer or a drag comes into it, and
+// sends each change back the same way (see MessageReceived). Only the asking window is
+// ever answered, on its own thread: nothing is pushed to other WebViews, which may be
+// showing third-party pages.
 constexpr PCWSTR kStoreKeys[] = {
     L"olkt-favorites", L"olkt-account-order", L"olkt-folds",        L"olkt-pane-width",
     L"olkt-agenda-height", L"olkt-other-height", L"olkt-other-split", L"olkt-other-folds",

@@ -402,34 +402,44 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     // The pane draws with the defaults meanwhile and redraws when it lands; writes stay
     // shut until then, so nothing saved is ever overwritten unread, and the state is
     // taken up here rather than behind a timeout, however late it arrives.
-    let asking = false, askedAt = 0, answeredAt = 0;
-    const written = new Set();  // keys this page wrote while a question was open
+    // Questions and answers are counted. The mod answers in the order it is asked, so
+    // answer n is the state as it stood when question n arrived, and a key this page
+    // wrote after sending question n is newer than answers 1 to n: it is kept over them.
+    let sent = 0, received = 0, askedAt = 0, again = false, retry = 0;
+    const writtenAfter = new Map();  // key -> how many questions had gone out before it was written
     const ask = () => {
-      // One question at a time, but an answer that never came must not stop the window
-      // asking for good: after two seconds the open question counts as lost.
-      if (asking && Date.now() - askedAt < 2000) return;
-      asking = true; askedAt = Date.now();
+      // One question at a time; a trigger meanwhile asks once more after the answer. An
+      // answer that never came must not stop the asking for good, so after two seconds a
+      // second question goes out. The count is left alone: a late answer then still lines
+      // up with its question, and a lost one only makes later answers look older than
+      // they are, which keeps this page's writes a little longer, never shorter.
+      if (sent > received && Date.now() - askedAt < 2000) { again = true; return; }
+      sent++; askedAt = Date.now();
       post('olkt-get\n' + S.key);
     };
-    // A focus or show right behind a pointer entry needs no second question.
-    const askFresh = () => { if (Date.now() - answeredAt > 500) ask(); };
-    const onVisible = () => { if (!document.hidden) askFresh(); };
+    const onVisible = () => { if (!document.hidden) ask(); };
     // Only an entry from outside the window counts, not moves between its own elements.
-    const onEnter = ev => { if (!ev.relatedTarget) ask(); };
+    // Drag events carry no relatedTarget at all, so entries are also held to one question
+    // per 300ms.
+    const onEnter = ev => { if (!ev.relatedTarget && Date.now() - askedAt > 300) ask(); };
+    const noteWrite = key => { if (sent > received) writtenAfter.set(key, sent); };
     if (channel && S.key) {
       onMessage = ev => {
         const text = typeof ev.data === 'string' ? ev.data : '';
         if (!text.startsWith('olkt-state\n')) return;
-        asking = false;
-        answeredAt = Date.now();
+        const n = received = Math.min(received + 1, sent);
         const next = new Map();
+        let parsed = true;
         try {
           const saved = JSON.parse(text.slice('olkt-state\n'.length));
           for (const key of STORE_KEYS) if (typeof saved[key] === 'string') next.set(key, saved[key]);
-        } catch { written.clear(); return; }
-        // A value this page wrote after asking is newer than the answer: keep it.
-        for (const k of written) { if (mem.has(k)) next.set(k, mem.get(k)); else next.delete(k); }
-        written.clear();
+        } catch { parsed = false; }
+        // A value this page wrote after this question went out is newer than the answer.
+        if (parsed) for (const [k, after] of writtenAfter) if (after >= n) { if (mem.has(k)) next.set(k, mem.get(k)); else next.delete(k); }
+        for (const [k, after] of writtenAfter) if (after <= n) writtenAfter.delete(k);
+        if (again) { again = false; ask(); }
+        // An answer that will not parse: a page still waiting for its first one asks again.
+        if (!parsed) { if (!loaded) { clearTimeout(retry); retry = setTimeout(ask, 1000); } return; }
         // An answer usually holds nothing new: no redraw then.
         const same = loaded && next.size === mem.size && [...next].every(([k, v]) => mem.get(k) === v);
         if (same) return;
@@ -439,7 +449,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
         try { applyState(); } catch {}
       };
       channel.addEventListener('message', onMessage);
-      window.addEventListener('focus', askFresh);
+      window.addEventListener('focus', ask);
       document.addEventListener('visibilitychange', onVisible);
       // On the document, which exists from the start; this script runs before the page
       // has an html element. Both events bubble up to it as the pointer or a drag comes in.
@@ -452,17 +462,18 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       setItem: (key, value) => {
         if (!loaded) return;
         mem.set(key, String(value));
-        if (asking) written.add(key);
+        noteWrite(key);
         post('olkt-set\n' + S.key + '\n' + key + '\n' + String(value));
       },
       removeItem: key => {
         if (!loaded) return;
         mem.delete(key);
-        if (asking) written.add(key);
+        noteWrite(key);
         post('olkt-set\n' + S.key + '\n' + key + '\n');
       },
       stop() {
-        window.removeEventListener('focus', askFresh);
+        clearTimeout(retry);
+        window.removeEventListener('focus', ask);
         document.removeEventListener('visibilitychange', onVisible);
         document.removeEventListener('mouseover', onEnter, true);
         document.removeEventListener('dragenter', onEnter, true);
@@ -722,7 +733,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     out.push(`.olkt-menu button:disabled{opacity:.4;cursor:default}`);
     out.push(`.olkt-menu .olkt-sep{height:1px;margin:4px 6px;background:var(--colorNeutralStroke2,#3a3a3a)}`);
     out.push(`.olkt-menu .olkt-sub{padding:6px 12px 2px;font-size:11px;letter-spacing:.06em;color:var(--colorNeutralForeground3,#a3a3a3)}`);
-    out.push(`.olkt-tree{box-sizing:border-box!important;max-height:100%!important;overflow-y:auto!important;overflow-x:hidden!important}`);
+    out.push(`.olkt-tree{box-sizing:border-box!important;max-height:100%!important;overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:auto!important;scrollbar-color:auto!important}`);
     // A scrollbar like Outlook's own: thin, no arrows, a rounded thumb in the theme's stroke
     // colour, shown while the pointer is over the tree. (scrollbar-width or scrollbar-color
     // would switch these ::-webkit-scrollbar rules off, so neither is set.)
@@ -3264,9 +3275,10 @@ void AddList(std::wstring& json, PCWSTR name, std::initializer_list<PCWSTR> fiel
 // Edits made inside Outlook (groups, renames, folds, account order, pane and card
 // sizes) are the mod's state, not Outlook's, so they live in Windhawk's storage and
 // leave with the mod. The page asks for them over the WebView's message channel, again
-// whenever its window is shown or focused or the pointer comes into it, and sends each
-// change back the same way (see MessageReceived). Only the asking window is ever answered, on its own thread: nothing
-// is pushed to other WebViews, which may be showing third-party pages.
+// whenever its window is shown or focused or the pointer or a drag comes into it, and
+// sends each change back the same way (see MessageReceived). Only the asking window is
+// ever answered, on its own thread: nothing is pushed to other WebViews, which may be
+// showing third-party pages.
 constexpr PCWSTR kStoreKeys[] = {
     L"olkt-favorites", L"olkt-account-order", L"olkt-folds",        L"olkt-pane-width",
     L"olkt-agenda-height", L"olkt-other-height", L"olkt-other-split", L"olkt-other-folds",

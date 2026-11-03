@@ -75,6 +75,16 @@ By hand: open Windhawk, choose Create new mod, replace the editor's contents wit
 [`mods/outlook-refined.wh.cpp`](mods/outlook-refined.wh.cpp), compile, exit editing mode, then
 restart Outlook.
 
+By script, with no editor: from an elevated PowerShell, run
+[`scripts/install-mod.ps1`](scripts/install-mod.ps1). It compiles with Windhawk's own compiler and
+writes what the Compile Mod button writes, taking the source from this repository or, where the
+repository is not present, from GitHub. Add `-DryRun` to compile and report without writing
+anything, which needs no administrator rights.
+
+To move a working installation to another machine along with its settings, run
+[`scripts/make-handoff.ps1`](scripts/make-handoff.ps1) on the machine that has it. That builds a
+folder holding the installer, the mod, your settings and a note with the one command to run.
+
 ## Settings
 
 | Setting | Default | What it does |

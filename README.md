@@ -15,8 +15,8 @@ agenda](docs/folder-pane.png)
 ## What it changes
 
 **Folder pane.** Favorites gather into groups that fold, with a count on a folded group.
-Right-click a group header for its menu; Shift+right-click a favorite to rename it or move it
-into a group. Pattern groups fill themselves: the Outgoing group collects every account's
+Right-click a group header for its menu; drag a favorite to move it, or Shift+right-click it to
+rename it or move it into a group. Pattern groups fill themselves: the Outgoing group collects every account's
 Drafts, Sent and Outbox, and the Junk group every Junk Email folder. Each account can get a
 compose button that starts a new message from that account, and a short label that replaces the
 address Outlook appends to folder names. The pane can be dragged wider, the account trees fold
@@ -115,8 +115,12 @@ in Outlook itself, not in the settings. They are saved in Windhawk's own storage
 under the names `olkt-favorites`, `olkt-account-order`, `olkt-folds`, `olkt-pane-width`,
 `olkt-agenda-height`, `olkt-other-height`, `olkt-other-split` and `olkt-other-folds`, so removing
 the mod removes them too. Anything an earlier version left in Outlook's local storage is moved
-across the first time this version runs. Drag a favorite onto a group header to put it in that
-group, and Shift+right-click a favorite for its menu.
+across the first time this version runs. Drag a favorite onto another favorite to put it just
+above or below that one, or onto a group header: its upper half puts it above the group, its
+lower half first inside it. Shift+right-click a favorite for its menu. Dragging a favorite
+you can place moves it within Favorites, so to move the folder itself into another folder, drag
+it in its account tree instead. Favorites that the Outgoing and Junk groups collect keep
+Outlook's own drag.
 
 Other Outlook windows that are already open pick up such a change when they are reopened.
 

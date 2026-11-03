@@ -117,7 +117,9 @@ under the names `olkt-favorites`, `olkt-account-order`, `olkt-folds`, `olkt-pane
 the mod removes them too. Anything an earlier version left in Outlook's local storage is moved
 across the first time this version runs. Drag a favorite onto another favorite to put it just
 above or below that one, or onto a group header: its upper half puts it above the group, its
-lower half first inside it. Shift+right-click a favorite for its menu.
+lower half first inside it. Shift+right-click a favorite for its menu. Dragging a favorite
+always moves it within Favorites, so to move the folder itself into another folder, drag it in
+its account tree instead.
 
 Other Outlook windows that are already open pick up such a change when they are reopened.
 

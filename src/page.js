@@ -748,8 +748,11 @@
       if (!line) return;
       line.remove();
       listEl.classList.remove('olkt-dragging');
-      // Swallow the click the release would otherwise turn into.
-      document.addEventListener('click', e => { e.stopPropagation(); e.preventDefault(); }, { capture: true, once: true });
+      // Swallow the click the release would otherwise turn into, and only that one: a
+      // release that makes no click must not leave the next real click eaten.
+      const swallow = e => { e.stopPropagation(); e.preventDefault(); };
+      document.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => document.removeEventListener('click', swallow, true), 0);
       const order = roots().map(r => r.getAttribute('data-folder-name'));
       const dragged = item.getAttribute('data-folder-name');
       const from = order.indexOf(dragged);
@@ -808,49 +811,55 @@
   // its lower half to land first inside it. Outlook's own drag of the row is cancelled
   // for the press (the tree's order is ours; a native drop would only reorder Outlook's
   // hidden list). A press without movement stays a normal click.
+  // The drag holds names, not tree nodes: every save comes back from the mod as fresh
+  // state that replaces cfg.favorites, so a node taken at the press can be gone by the
+  // release. Names resolve against whatever tree is current when the drop lands.
+  const movable = name => name && !matchesAnyGroup(name) && !cfg.hide.includes(name);
   function onFavPress(ev) {
-    const list = boundList;
     const item = ev.button === 0 && ev.target.closest('[role="treeitem"]');
-    if (!item || !item.parentElement || item.parentElement.parentElement !== list) return;
+    if (!item || !item.parentElement || item.parentElement.parentElement !== boundList) return;
     const folder = item.getAttribute('data-folder-name');
-    if (!folder || !cfg.favorites.length || matchesAnyGroup(folder) || cfg.hide.includes(folder)) return;
+    if (!cfg.favorites.length || !movable(folder)) return;
+    const list = boundList;
     const startY = ev.clientY;
     const noNative = e => e.preventDefault();
-    let node = null, line = null, drop = null;
+    let line = null, last = null;
     const target = e => {
+      const cur = favoritesList() || list;
       const el = document.elementFromPoint(e.clientX, e.clientY);
       const head = el && el.closest('.olkt-head[data-group]');
       const row = !head && el && el.closest('[role="treeitem"]');
       const hit = head || row;
-      if (!hit || !list.contains(hit)) return null;
+      if (!hit || !cur.contains(hit)) return null;
       const box = hit.getBoundingClientRect();
       const low = e.clientY > box.top + box.height / 2;
-      if (head) {
-        const g = findGroup(head.dataset.group);
-        return g ? (low ? { into: g, y: box.bottom } : { ref: g, after: false, y: box.top }) : null;
-      }
-      const ref = findFolder(row.getAttribute('data-folder-name'));
-      return ref && ref !== node ? { ref, after: low, y: low ? box.bottom : box.top } : null;
+      if (head) return findGroup(head.dataset.group) ? { group: head.dataset.group, into: low, y: low ? box.bottom : box.top } : null;
+      const name = row.getAttribute('data-folder-name');
+      return row.parentElement.parentElement === cur && name !== folder && movable(name) ? { folder: name, after: low, y: low ? box.bottom : box.top } : null;
+    };
+    const show = e => {
+      const drop = target(e);
+      const lb = (favoritesList() || list).getBoundingClientRect();
+      Object.assign(line.style, drop ? { display: '', left: lb.left + 8 + 'px', width: lb.width - 16 + 'px', top: drop.y - 1 + 'px' } : { display: 'none' });
     };
     const move = e => {
       if (!line && Math.abs(e.clientY - startY) < 6) return;
       if (!line) {
-        node = findFolder(folder);
-        if (!node && placeUnplaced()) node = findFolder(folder);
-        if (!node) { end(); return; }
         line = document.createElement('div');
         line.className = 'olkt-acct-drop';
         document.body.appendChild(line);
         list.classList.add('olkt-dragging');
       }
-      drop = target(e);
-      const lb = list.getBoundingClientRect();
-      Object.assign(line.style, drop ? { display: '', left: lb.left + 8 + 'px', width: lb.width - 16 + 'px', top: drop.y - 1 + 'px' } : { display: 'none' });
+      last = e;
+      show(e);
     };
+    // A wheel scroll mid-drag moves the rows under a still pointer.
+    const scrolled = () => { if (line && last) show(last); };
     const end = e => {
       document.removeEventListener('pointermove', move, true);
       document.removeEventListener('pointerup', end, true);
       document.removeEventListener('pointercancel', end, true);
+      document.removeEventListener('scroll', scrolled, true);
       list.removeEventListener('dragstart', noNative, true);
       if (!line) return;
       line.remove();
@@ -859,23 +868,30 @@
       const swallow = c => { c.stopPropagation(); c.preventDefault(); };
       document.addEventListener('click', swallow, { capture: true, once: true });
       setTimeout(() => document.removeEventListener('click', swallow, true), 0);
-      if (drop && e && e.type === 'pointerup') placeAt(node, drop);
+      const drop = e.type === 'pointerup' && target(e);
+      if (drop) placeAt(folder, drop);
     };
     list.addEventListener('dragstart', noNative, true);
     document.addEventListener('pointermove', move, true);
     document.addEventListener('pointerup', end, true);
     document.addEventListener('pointercancel', end, true);
+    document.addEventListener('scroll', scrolled, true);
   }
 
-  function placeAt(node, drop) {
-    const at = locate(node);
-    if (!at) return;
+  // Favorites not yet in the tree join it only now that a drop has landed, so an
+  // abandoned drag changes nothing.
+  function placeAt(folder, drop) {
+    if (!findFolder(folder) || (drop.folder && !findFolder(drop.folder))) placeUnplaced();
+    const node = findFolder(folder);
+    const ref = drop.group ? findGroup(drop.group) : findFolder(drop.folder);
+    const at = node && locate(node);
+    if (!at || !ref) return;
     at.siblings.splice(at.index, 1);
     if (drop.into) {
-      drop.into.items.unshift(node);
-      if (folds[drop.into.id]) toggleFold(drop.into.id);
+      ref.items.unshift(node);
+      if (folds[ref.id]) toggleFold(ref.id);
     } else {
-      const t = locate(drop.ref);
+      const t = locate(ref);
       if (!t) { at.siblings.splice(at.index, 0, node); return; }
       t.siblings.splice(t.index + (drop.after ? 1 : 0), 0, node);
     }
@@ -1450,7 +1466,12 @@
     // Match the pane's own background so the tree does not show through. Only an opaque
     // color will do: a picture theme leaves every ancestor transparent or translucent, and
     // then the theme's own background token stands in.
-    const alpha = c => { const p = (c.match(/rgba?\(([^)]+)\)/) || [, ''])[1].split(','); return p.length === 4 ? Number(p[3]) : c === 'transparent' ? 0 : 1; };
+    // Legacy rgba(r, g, b, a) or the slash form any other color function uses (/ a or / a%).
+    const alpha = c => {
+      if (c === 'transparent') return 0;
+      const m = /\/\s*([\d.]+)(%?)\s*\)$/.exec(c) || /^rgba\([^)]*,\s*([\d.]+)\)$/.exec(c);
+      return m ? Number(m[1]) / (m[2] === '%' ? 100 : 1) : 1;
+    };
     let bgEl = pane, bg = '';
     while (bgEl && !bg) { const c = getComputedStyle(bgEl).backgroundColor; if (alpha(c) === 1) bg = c; bgEl = bgEl.parentElement; }
     if (!bg) bg = 'var(--colorNeutralBackground1,#1f1f1f)';
@@ -1549,7 +1570,8 @@
     // (Padding cannot work: this element has no fixed height and just grows.)
     // Outlook's own min-height would beat the cap, so it comes off. The cap is then checked
     // against where the tree really ends: under a zoomed ancestor a CSS pixel inside the tree
-    // is not a pixel on screen, and the first cap lands short or long by that factor.
+    // is not a pixel on screen, and the first cap lands short or long by that factor. Short
+    // only counts while the tree overflows; a tree that fits simply ends early.
     if (scroller) {
       scroller.style.paddingBottom = '';
       scroller.style.minHeight = '0px';
@@ -1557,7 +1579,8 @@
       const avail = Math.max(60, Math.round(agendaEl.getBoundingClientRect().top - top));
       scroller.style.maxHeight = avail + 'px';
       const got = scroller.getBoundingClientRect().bottom - top;
-      if (got > avail + 1) scroller.style.maxHeight = Math.max(60, Math.floor(avail * avail / got)) + 'px';
+      const short = got < avail - 1 && scroller.scrollHeight > scroller.clientHeight + 1;
+      if (got > 0 && (got > avail + 1 || short)) scroller.style.maxHeight = Math.max(60, Math.floor(avail * avail / got)) + 'px';
     }
   }
 
@@ -1709,17 +1732,21 @@
   function folderMenu(node, item, x, y) {
     const at = locate(node);
     const original = (item.getAttribute('title') || node.folder).replace(/ - [\d,]+ items?( \([\d,]+ unread\))?$/, '');
-    const targets = [{ heading: 'MOVE TO' }, { label: 'Top level', indent: 0, disabled: !at || !at.parent, run: () => moveTo(node, null) }];
+    // Each action looks its nodes up again when it runs: a save since the menu opened
+    // (placeUnplaced makes one) has replaced the tree these were read from.
+    const self = () => findFolder(node.folder) || node;
+    const grp = g => findGroup(g.id) || g;
+    const targets = [{ heading: 'MOVE TO' }, { label: 'Top level', indent: 0, disabled: !at || !at.parent, run: () => moveTo(self(), null) }];
     for (const { n: g, depth } of groups()) {
-      targets.push({ label: g.label, indent: depth + 1, disabled: at && at.parent === g, run: () => moveTo(node, g) });
+      targets.push({ label: g.label, indent: depth + 1, disabled: at && at.parent === g, run: () => moveTo(self(), grp(g)) });
     }
     showMenu(x, y, [
-      { label: 'Rename (short label)', run: () => rename(item, node.label || original, v => { node.label = v && v !== original ? v : undefined; save(); }) },
-      { label: 'Use original name', disabled: !node.label, run: () => { delete node.label; save(); } },
-      { label: 'New group below', run: () => addGroupAfter(node) },
+      { label: 'Rename (short label)', run: () => rename(item, node.label || original, v => { self().label = v && v !== original ? v : undefined; save(); }) },
+      { label: 'Use original name', disabled: !node.label, run: () => { delete self().label; save(); } },
+      { label: 'New group below', run: () => addGroupAfter(self()) },
       '-',
-      { label: 'Move up', disabled: !at || at.index === 0, run: () => move(node, -1) },
-      { label: 'Move down', disabled: !at || at.index === at.siblings.length - 1, run: () => move(node, 1) },
+      { label: 'Move up', disabled: !at || at.index === 0, run: () => move(self(), -1) },
+      { label: 'Move down', disabled: !at || at.index === at.siblings.length - 1, run: () => move(self(), 1) },
       '-',
       ...targets,
     ]);

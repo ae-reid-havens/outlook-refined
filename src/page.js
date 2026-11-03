@@ -1434,13 +1434,12 @@
     layoutAgenda();
   }
 
-  // The folder tree's scrolling element. Two elements carry Outlook's customScrollBar
-  // class; only the one whose overflow scrolls is the right one.
-  // Outlook only turns its overflow on while hovered, so pick it by class: the
-  // innermost customScrollBar (the outer one is a focus wrapper).
-  function treeScroller(pane) {
-    const all = [...pane.querySelectorAll('.customScrollBar')].filter(d => !d.closest('.olkt-agenda'));
-    return all[all.length - 1] || null;
+  // The folder tree: one role="tree" holding two scroll areas, Favorites (which Outlook
+  // caps at clamp(20%, 462px, 70%) of the tree) and the account trees below it (which
+  // take the rest). Both carry Outlook's customScrollBar class.
+  function treeBox(pane) {
+    const list = favoritesList();
+    return (list && list.closest('[role="tree"]')) || pane.querySelector('[role="tree"]');
   }
 
   // Size the agenda (fixed height, or the space the folder tree leaves free) and keep
@@ -1448,7 +1447,6 @@
   function layoutAgenda() {
     const pane = document.querySelector(PANE);
     if (!pane || !agendaEl || !agendaEl.isConnected) return;
-    const scroller = treeScroller(pane);
     const max = Math.round(pane.clientHeight * 0.85);
     let h;
     if (folds[AGENDA]) h = 0;
@@ -1465,19 +1463,21 @@
       h = Math.max(150, Math.min(max, Math.round(pane.getBoundingClientRect().bottom - treeEnd - 12)));
     }
     agendaEl.style.height = h ? h + 'px' : '';
-    // Cap the folder tree at the agenda's top edge so it scrolls in the space left.
-    // (Padding cannot work: this element has no fixed height and just grows.)
-    // Outlook's own min-height would beat the cap, so it comes off. The cap is then checked
-    // against where the tree really ends: under a zoomed ancestor a CSS pixel inside the tree
-    // is not a pixel on screen, and the first cap lands short or long by that factor.
-    if (scroller) {
-      scroller.style.paddingBottom = '';
-      scroller.style.minHeight = '0px';
-      const top = scroller.getBoundingClientRect().top;
-      const avail = Math.max(60, Math.round(agendaEl.getBoundingClientRect().top - top));
-      scroller.style.maxHeight = avail + 'px';
-      const got = scroller.getBoundingClientRect().bottom - top;
-      if (got > avail + 1) scroller.style.maxHeight = Math.max(60, Math.floor(avail * avail / got)) + 'px';
+    // Fit the whole tree into the space above the agenda and let Outlook share it out:
+    // Favorites' clamp() is a share of the tree's height, so it shrinks with it, and the
+    // account trees take the rest. Capping only one scroll area left the other running
+    // under the agenda, and on a short pane put the account trees wholly behind it. Any
+    // scroll area that still reaches past the agenda's top is then capped on its own.
+    const tree = treeBox(pane);
+    if (tree) {
+      const edge = agendaEl.getBoundingClientRect().top;
+      tree.style.height = Math.max(60, Math.round(edge - tree.getBoundingClientRect().top)) + 'px';
+      for (const s of tree.querySelectorAll('.customScrollBar')) {
+        s.style.paddingBottom = '';
+        s.style.maxHeight = '';
+        const r = s.getBoundingClientRect();
+        if (r.height && r.bottom > edge + 1) s.style.maxHeight = Math.max(40, Math.round(edge - r.top)) + 'px';
+      }
     }
   }
 
@@ -2686,7 +2686,8 @@
   let resizeTimer = 0;
   const onResize = () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => { if (current()) render(); }, 250);
+    // The tree's height is set from the agenda's top edge, so it is worked out again too.
+    resizeTimer = setTimeout(() => { if (current()) { render(); layoutAgenda(); } }, 250);
   };
   const onDocPointer = ev => { if (!ev.target.closest('.olkt-menu, .olkt-rename')) closeMenus(); };
   const onDocKey = ev => { if (ev.key === 'Escape') closeMenus(); };
@@ -2724,7 +2725,8 @@
       if (boundList) unbindList(boundList);
       if (acctListBound) acctListBound.removeEventListener('pointerdown', onAcctPress, true);
       clearInterval(agendaTimer);
-      document.querySelectorAll(`${PANE} .customScrollBar`).forEach(n => { n.style.paddingBottom = ''; n.style.maxHeight = ''; n.style.minHeight = ''; });
+      document.querySelectorAll(`${PANE} .customScrollBar`).forEach(n => { n.style.paddingBottom = ''; n.style.maxHeight = ''; });
+      document.querySelectorAll(`${PANE} [role="tree"]`).forEach(n => { n.style.height = ''; });
       document.querySelectorAll(OURS).forEach(n => n.remove());
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));
       for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked', 'data-olkt-quoted', 'data-olkt-collapsed'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));

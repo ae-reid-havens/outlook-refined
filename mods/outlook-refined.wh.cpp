@@ -722,7 +722,16 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     out.push(`.olkt-menu button:disabled{opacity:.4;cursor:default}`);
     out.push(`.olkt-menu .olkt-sep{height:1px;margin:4px 6px;background:var(--colorNeutralStroke2,#3a3a3a)}`);
     out.push(`.olkt-menu .olkt-sub{padding:6px 12px 2px;font-size:11px;letter-spacing:.06em;color:var(--colorNeutralForeground3,#a3a3a3)}`);
-    out.push(`.olkt-tree{box-sizing:border-box!important;max-height:100%!important;overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:thin}`);
+    out.push(`.olkt-tree{box-sizing:border-box!important;max-height:100%!important;overflow-y:auto!important;overflow-x:hidden!important}`);
+    // A scrollbar like Outlook's own: thin, no arrows, a rounded thumb in the theme's stroke
+    // colour, shown while the pointer is over the tree. (scrollbar-width or scrollbar-color
+    // would switch these ::-webkit-scrollbar rules off, so neither is set.)
+    out.push(`.olkt-tree::-webkit-scrollbar{width:8px}`);
+    out.push(`.olkt-tree::-webkit-scrollbar-button{display:none;height:0}`);
+    out.push(`.olkt-tree::-webkit-scrollbar-track{background:transparent}`);
+    out.push(`.olkt-tree::-webkit-scrollbar-thumb{background-color:transparent;border:2px solid transparent;border-radius:4px;background-clip:padding-box}`);
+    out.push(`.olkt-tree:hover::-webkit-scrollbar-thumb{background-color:var(--colorNeutralStroke1,#666)}`);
+    out.push(`.olkt-tree::-webkit-scrollbar-thumb:hover{background-color:var(--colorNeutralStroke1Hover,#888)}`);
     out.push(`.olkt-tree > .customScrollBar{flex:none!important;height:auto!important;max-height:none!important;min-height:0!important;overflow:visible!important}`);
     out.push(`.olkt-agenda{position:absolute;left:0;right:2px;bottom:0;z-index:15;box-sizing:border-box;display:flex;flex-direction:column;padding:0 8px 6px 6px;font-size:12px;color:var(--colorNeutralForeground1,#e6e6e6)}`);
     // Outlook hides the pane by sliding its own tree out; ours would stay behind.

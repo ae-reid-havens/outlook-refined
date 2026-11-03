@@ -678,6 +678,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     out.push(`.olkt-menu button:disabled{opacity:.4;cursor:default}`);
     out.push(`.olkt-menu .olkt-sep{height:1px;margin:4px 6px;background:var(--colorNeutralStroke2,#3a3a3a)}`);
     out.push(`.olkt-menu .olkt-sub{padding:6px 12px 2px;font-size:11px;letter-spacing:.06em;color:var(--colorNeutralForeground3,#a3a3a3)}`);
+    out.push(`.olkt-tree{box-sizing:border-box!important;overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:thin}`);
+    out.push(`.olkt-tree > .customScrollBar{flex:none!important;height:auto!important;max-height:none!important;min-height:0!important;overflow:visible!important}`);
     out.push(`.olkt-agenda{position:absolute;left:0;right:2px;bottom:0;z-index:15;box-sizing:border-box;display:flex;flex-direction:column;padding:0 8px 6px 6px;font-size:12px;color:var(--colorNeutralForeground1,#e6e6e6)}`);
     // Outlook hides the pane by sliding its own tree out; ours would stay behind.
     out.push(`body:has(button[aria-label="Show navigation pane"]) ${PANE} :is(.olkt-agenda,.olkt-resize){display:none}`);
@@ -1581,9 +1583,13 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       agendaEl = el('div', 'olkt-agenda');
       pane.appendChild(agendaEl);
     }
-    // Match the pane's own background so the tree does not show through.
-    let bgEl = pane, bg = 'rgba(0, 0, 0, 0)';
-    while (bgEl && (bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent')) { bg = getComputedStyle(bgEl).backgroundColor; bgEl = bgEl.parentElement; }
+    // Match the pane's own background so the tree does not show through. Only an opaque
+    // color will do: a picture theme leaves every ancestor transparent or translucent, and
+    // then the theme's own background token stands in.
+    const alpha = c => { const p = (c.match(/rgba?\(([^)]+)\)/) || [, ''])[1].split(','); return p.length === 4 ? Number(p[3]) : c === 'transparent' ? 0 : 1; };
+    let bgEl = pane, bg = '';
+    while (bgEl && !bg) { const c = getComputedStyle(bgEl).backgroundColor; if (alpha(c) === 1) bg = c; bgEl = bgEl.parentElement; }
+    if (!bg) bg = 'var(--colorNeutralBackground1,#1f1f1f)';
     agendaEl.style.background = bg;
     agendaEl.style.setProperty('--olkt-pane-bg', bg);
 
@@ -1644,13 +1650,13 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     layoutAgenda();
   }
 
-  // The folder tree's scrolling element. Two elements carry Outlook's customScrollBar
-  // class; only the one whose overflow scrolls is the right one.
-  // Outlook only turns its overflow on while hovered, so pick it by class: the
-  // innermost customScrollBar (the outer one is a focus wrapper).
-  function treeScroller(pane) {
-    const all = [...pane.querySelectorAll('.customScrollBar')].filter(d => !d.closest('.olkt-agenda'));
-    return all[all.length - 1] || null;
+  // The folder tree: one role="tree" holding two scroll areas, Favorites (which Outlook
+  // caps at clamp(20%, 462px, 70%) of the tree) and the account trees below it (which
+  // take the rest). Both carry Outlook's customScrollBar class. With the agenda on, the
+  // olkt-tree class turns the two into one list that the tree itself scrolls.
+  function treeBox(pane) {
+    const list = favoritesList();
+    return (list && list.closest('[role="tree"]')) || pane.querySelector('[role="tree"]');
   }
 
   // Size the agenda (fixed height, or the space the folder tree leaves free) and keep
@@ -1658,7 +1664,6 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   function layoutAgenda() {
     const pane = document.querySelector(PANE);
     if (!pane || !agendaEl || !agendaEl.isConnected) return;
-    const scroller = treeScroller(pane);
     const max = Math.round(pane.clientHeight * 0.85);
     let h;
     if (folds[AGENDA]) h = 0;
@@ -1675,13 +1680,21 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       h = Math.max(150, Math.min(max, Math.round(pane.getBoundingClientRect().bottom - treeEnd - 12)));
     }
     agendaEl.style.height = h ? h + 'px' : '';
-    // Cap the folder tree at the agenda's top edge so it scrolls in the space left.
-    // (Padding cannot work: this element has no fixed height and just grows.)
-    if (scroller) {
-      scroller.style.paddingBottom = '';
-      const avail = agendaEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-      scroller.style.maxHeight = Math.max(60, Math.round(avail)) + 'px';
-    }
+    // The tree scrolls as one, at the pane's full height: Favorites and the account trees
+    // keep their own sizes however tall the agenda is, the agenda covers the bottom of the
+    // pane, and bottom padding as tall as the agenda lets the last folders scroll up above
+    // it. (Fitting the tree into the space above the agenda squeezed Favorites each time
+    // the agenda grew; capping one scroll area left the other behind the agenda.)
+    const tree = treeBox(pane);
+    if (!tree) return;
+    tree.classList.add('olkt-tree');
+    const paneBottom = pane.getBoundingClientRect().bottom;
+    const box = agendaEl.getBoundingClientRect();
+    tree.style.maxHeight = Math.round(paneBottom - tree.getBoundingClientRect().top) + 'px';
+    // A hidden agenda (navigation pane collapsed, or printing) covers nothing.
+    const cover = box.height ? Math.round(paneBottom - box.top) + 'px' : '';
+    tree.style.paddingBottom = cover;
+    tree.style.scrollPaddingBottom = cover;  // keyboard focus scrolls rows clear of it too
   }
 
   function bindGrip(grip) {
@@ -2825,11 +2838,16 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     list.removeEventListener('drop', onListRelease, true);
     list.removeEventListener('pointerup', onListRelease, true);
   }
+  let agendaShown = false;
   function ensure() {
     ensureCalendar();
     ensureReading();
     ensureAgendaData();
     ensureOther();
+    // The agenda hides with a collapsed navigation pane; the tree is fitted again when
+    // it comes back, not a minute later.
+    const shown = !!(agendaEl && agendaEl.isConnected && agendaEl.offsetParent);
+    if (shown !== agendaShown) { agendaShown = shown; layoutAgenda(); }
     const list = favoritesList();
     if (!list) return;
     if (!list.hasAttribute('data-olkt-favs')) list.setAttribute('data-olkt-favs', '');
@@ -2889,7 +2907,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   let resizeTimer = 0;
   const onResize = () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => { if (current()) render(); }, 250);
+    // The tree's height is set from the agenda's top edge, so it is worked out again too.
+    resizeTimer = setTimeout(() => { if (current()) { render(); layoutAgenda(); } }, 250);
   };
   const onDocPointer = ev => { if (!ev.target.closest('.olkt-menu, .olkt-rename')) closeMenus(); };
   const onDocKey = ev => { if (ev.key === 'Escape') closeMenus(); };
@@ -2927,7 +2946,11 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       if (boundList) unbindList(boundList);
       if (acctListBound) acctListBound.removeEventListener('pointerdown', onAcctPress, true);
       clearInterval(agendaTimer);
-      document.querySelectorAll(`${PANE} .customScrollBar`).forEach(n => { n.style.paddingBottom = ''; n.style.maxHeight = ''; });
+      document.querySelectorAll(`${PANE} .customScrollBar`).forEach(n => { n.style.paddingBottom = ''; n.style.maxHeight = ''; n.style.minHeight = ''; });
+      document.querySelectorAll(`${PANE} [role="tree"]`).forEach(n => {
+        n.classList.remove('olkt-tree');
+        n.style.maxHeight = ''; n.style.paddingBottom = ''; n.style.scrollPaddingBottom = '';
+      });
       document.querySelectorAll(OURS).forEach(n => n.remove());
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));
       for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked', 'data-olkt-quoted', 'data-olkt-collapsed'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));

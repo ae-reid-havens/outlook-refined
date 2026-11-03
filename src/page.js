@@ -379,7 +379,8 @@
   let fs;
   function buildCss() {
     // Read Outlook's label size once the tree exists, before rename rules zero it.
-    const label = document.querySelector('[role="treeitem"] > span');
+    // A row a rename rule already zeroed reads 0px, so take the first one that is not.
+    const label = [...document.querySelectorAll('[role="treeitem"] > span')].find(s => parseFloat(getComputedStyle(s).fontSize) > 0);
     if (!fs && label) fs = getComputedStyle(label).fontSize;
     const size = fs || '14px';
     const out = [];
@@ -415,6 +416,9 @@
     out.push(`${ACCT_LIST}.olkt-dragging [role="treeitem"][aria-level="1"]{cursor:grabbing}`);
     out.push(`[data-olkt-favs].olkt-dragging [role="treeitem"]{cursor:grabbing}`);
     out.push(`.olkt-head.olkt-accounts{margin-top:10px;padding-left:12px;border-top:1px solid var(--colorNeutralStroke2,#3a3a3a);border-radius:0;height:32px}`);
+    // Folder-pane headers follow Outlook's folder text size, a step below the rows.
+    out.push(`[data-olkt-favs] > .olkt-head, .olkt-head.olkt-accounts{font-size:calc(${size} * .85)}`);
+    out.push(`[data-olkt-favs] > .olkt-head{height:calc(${size} * 1.85)}`);
 
     // Favorites: our compose bar first, then anything not yet placed (in Outlook's
     // order, at top level, so a new install keeps every existing favorite in view),
@@ -445,7 +449,7 @@
     };
     emit(cfg.favorites, 0, false);
 
-    out.push(`.olkt-head{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:8px;height:calc(${size} * 1.85);width:100%;cursor:pointer;font-size:calc(${size} * .85);font-weight:600;letter-spacing:.04em;color:var(--colorNeutralForeground3,#a3a3a3);border-radius:4px}`);
+    out.push(`.olkt-head{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:8px;height:26px;width:100%;cursor:pointer;font-size:12px;font-weight:600;letter-spacing:.04em;color:var(--colorNeutralForeground3,#a3a3a3);border-radius:4px}`);
     out.push(`.olkt-head:hover{background:var(--colorNeutralBackground1Hover,#333);color:var(--colorNeutralForeground1,#e6e6e6)}`);
     out.push(`.olkt-head:focus-visible{outline:2px solid var(--colorBrandStroke1,#4aa3f0)}`);
     out.push(`.olkt-head .olkt-chev{flex:none;width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg) translate(-2px,-1px)}`);
@@ -465,7 +469,7 @@
     out.push(`.olkt-menu button:disabled{opacity:.4;cursor:default}`);
     out.push(`.olkt-menu .olkt-sep{height:1px;margin:4px 6px;background:var(--colorNeutralStroke2,#3a3a3a)}`);
     out.push(`.olkt-menu .olkt-sub{padding:6px 12px 2px;font-size:11px;letter-spacing:.06em;color:var(--colorNeutralForeground3,#a3a3a3)}`);
-    out.push(`.olkt-tree{box-sizing:border-box!important;overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:thin}`);
+    out.push(`.olkt-tree{box-sizing:border-box!important;max-height:100%!important;overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:thin}`);
     out.push(`.olkt-tree > .customScrollBar{flex:none!important;height:auto!important;max-height:none!important;min-height:0!important;overflow:visible!important}`);
     out.push(`.olkt-agenda{position:absolute;left:0;right:2px;bottom:0;z-index:15;box-sizing:border-box;display:flex;flex-direction:column;padding:0 8px 6px 6px;font-size:12px;color:var(--colorNeutralForeground1,#e6e6e6)}`);
     // Outlook hides the pane by sliding its own tree out; ours would stay behind.
@@ -476,7 +480,7 @@
     out.push(`.olkt-feed{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:transparent transparent}`);
     out.push(`.olkt-feed:hover{scrollbar-color:var(--colorNeutralStroke1,#555) transparent}`);
     out.push(`.olkt-agenda .olkt-head.olkt-allday{height:22px;margin-left:12px;width:calc(100% - 12px);font-size:11px;letter-spacing:0;font-weight:400}`);
-    out.push(`.olkt-agenda .olkt-head{margin-top:2px;font-size:12px;height:26px}`);
+    out.push(`.olkt-agenda .olkt-head{margin-top:2px}`);
     out.push(`.olkt-month{flex:none;padding:4px 0 6px 12px}`);
     out.push(`.olkt-month-bar{display:flex;align-items:center;justify-content:space-between;padding:0 0 4px}`);
     out.push(`.olkt-month-title{all:unset;cursor:pointer;flex:1;text-align:center;font-size:12px;font-weight:700;color:var(--colorNeutralForeground1,#e6e6e6)}`);
@@ -1565,32 +1569,34 @@
     const pane = document.querySelector(PANE);
     if (!pane || !agendaEl || !agendaEl.isConnected) return;
     const max = Math.round(pane.clientHeight * 0.85);
+    const tree = treeBox(pane);
     let h;
     if (folds[AGENDA]) h = 0;
     else if (agendaHeight) h = Math.min(agendaHeight, max);
     else {
       // Free space = pane bottom minus where the folder tree's content actually ends
-      // (scrollHeight never drops below the visible height, so it cannot be used).
+      // (scrollHeight never drops below the visible height, so it cannot be used),
+      // measured as if the tree were scrolled to the top.
       let treeEnd = pane.getBoundingClientRect().top;
       for (const n of pane.querySelectorAll('[role="treeitem"], .olkt-head, .olkt-compose')) {
         if (agendaEl.contains(n)) continue;
         const r = n.getBoundingClientRect();
-        if (r.height && r.bottom > treeEnd) treeEnd = r.bottom;
+        const end = r.bottom + (tree && tree.contains(n) ? tree.scrollTop : 0);
+        if (r.height && end > treeEnd) treeEnd = end;
       }
       h = Math.max(150, Math.min(max, Math.round(pane.getBoundingClientRect().bottom - treeEnd - 12)));
     }
     agendaEl.style.height = h ? h + 'px' : '';
-    // The tree scrolls as one, at the pane's full height: Favorites and the account trees
-    // keep their own sizes however tall the agenda is, the agenda covers the bottom of the
-    // pane, and bottom padding as tall as the agenda lets the last folders scroll up above
-    // it. (Fitting the tree into the space above the agenda squeezed Favorites each time
-    // the agenda grew; capping one scroll area left the other behind the agenda.)
-    const tree = treeBox(pane);
+    // The tree scrolls as one, at the pane's full height (the olkt-tree rules): Favorites
+    // and the account trees keep their own sizes however tall the agenda is, the agenda
+    // covers the bottom of the pane, and bottom padding as tall as the agenda lets the
+    // last folders scroll up above it. (Fitting the tree into the space above the agenda
+    // squeezed Favorites each time the agenda grew; capping one scroll area left the
+    // other behind the agenda.)
     if (!tree) return;
     tree.classList.add('olkt-tree');
     const paneBottom = pane.getBoundingClientRect().bottom;
     const box = agendaEl.getBoundingClientRect();
-    tree.style.maxHeight = Math.round(paneBottom - tree.getBoundingClientRect().top) + 'px';
     // A hidden agenda (navigation pane collapsed, or printing) covers nothing.
     const cover = box.height ? Math.round(paneBottom - box.top) + 'px' : '';
     tree.style.paddingBottom = cover;
@@ -2858,10 +2864,9 @@
       if (boundList) unbindList(boundList);
       if (acctListBound) acctListBound.removeEventListener('pointerdown', onAcctPress, true);
       clearInterval(agendaTimer);
-      document.querySelectorAll(`${PANE} .customScrollBar`).forEach(n => { n.style.paddingBottom = ''; n.style.maxHeight = ''; n.style.minHeight = ''; });
       document.querySelectorAll(`${PANE} [role="tree"]`).forEach(n => {
         n.classList.remove('olkt-tree');
-        n.style.maxHeight = ''; n.style.paddingBottom = ''; n.style.scrollPaddingBottom = '';
+        n.style.paddingBottom = ''; n.style.scrollPaddingBottom = '';
       });
       document.querySelectorAll(OURS).forEach(n => n.remove());
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));

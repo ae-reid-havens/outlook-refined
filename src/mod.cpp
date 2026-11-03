@@ -41,9 +41,9 @@ storage is moved across the first time this one runs. Other Outlook windows
 that are already open pick up a change when they are reopened.
 
 **Folder pane:** Favorites in groups that fold (right-click a group header for
-its menu, Shift+right-click a favorite to rename or move it), per-account
-compose buttons, a resizable pane, account trees under one foldable heading,
-accounts reordered by dragging.
+its menu, drag a favorite to move it, Shift+right-click it to rename or move
+it), per-account compose buttons, a resizable pane, account trees under one
+foldable heading, accounts reordered by dragging.
 
 **Agenda:** today and the next days from every account's calendar at the bottom
 of the folder pane, with a join button for online meetings, under a month grid

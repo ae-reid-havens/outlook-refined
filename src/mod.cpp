@@ -38,7 +38,7 @@ stored, logged or sent anywhere else, and no credential is written down.
 pane and card sizes are saved in Windhawk's own storage for this mod, so they
 leave when the mod does. State an earlier version wrote into Outlook's own local
 storage is moved across the first time this one runs. Other Outlook windows
-that are already open pick up a change when they are reopened.
+that are already open pick up a change as soon as you move into them.
 
 **Folder pane:** Favorites in groups that fold (right-click a group header for
 its menu, drag a favorite to move it, Shift+right-click it to rename or move
@@ -175,6 +175,8 @@ the parts that depend on this most.
 #include <urlmon.h>
 
 #include <atomic>
+#include <cstdarg>
+#include <cstdio>
 #include <map>
 #include <string>
 #include <string_view>
@@ -290,9 +292,11 @@ void AddList(std::wstring& json, PCWSTR name, std::initializer_list<PCWSTR> fiel
 
 // Edits made inside Outlook (groups, renames, folds, account order, pane and card
 // sizes) are the mod's state, not Outlook's, so they live in Windhawk's storage and
-// leave with the mod. The page asks for them over the WebView's message channel and
-// sends each change back the same way, and every window is told when one lands (see
-// MessageReceived and BroadcastState).
+// leave with the mod. The page asks for them over the WebView's message channel, again
+// whenever its window is shown or focused or the pointer or a drag comes into it, and
+// sends each change back the same way (see MessageReceived). Only the asking window is
+// ever answered, on its own thread: nothing is pushed to other WebViews, which may be
+// showing third-party pages.
 constexpr PCWSTR kStoreKeys[] = {
     L"olkt-favorites", L"olkt-account-order", L"olkt-folds",        L"olkt-pane-width",
     L"olkt-agenda-height", L"olkt-other-height", L"olkt-other-split", L"olkt-other-folds",
@@ -476,9 +480,6 @@ void StoreValue(std::wstring_view name, std::wstring_view text) {
     ReleaseSRWLockExclusive(&g_storeLock);
 }
 
-// Defined with the thread helpers it needs, at the end of the file.
-void BroadcastState();
-
 // A line the page sent, once the sender has been vouched for:
 //   olkt-get <key>                 asks for the saved state, answered on the same channel
 //   olkt-set <key> <name> <value>  writes one value; an empty value deletes it
@@ -501,10 +502,9 @@ void HandleMessage(IUnknown* sender, PCWSTR text) {
         message.remove_prefix(line + 1);
         size_t name = message.find(L'\n');
         if (name == std::wstring_view::npos) return;
+        // Stored only. Another open window takes it up by asking, when it is shown or
+        // focused or the pointer or a drag comes into it.
         StoreValue(message.substr(0, name), message.substr(name + 1));
-        // Every window, not only the one that wrote: a second window would otherwise go
-        // on showing what it read at startup and then save that over this.
-        BroadcastState();
         return;
     }
     std::wstring answer = L"olkt-state\n" + StateJson();
@@ -971,36 +971,6 @@ void WINAPI ReleaseViewOnThread(PVOID param) {
     ReleaseView(*(const PageView*)param, true);
 }
 
-struct StatePost {
-    IUnknown* webview;
-    const wchar_t* text;
-};
-
-void WINAPI PostStateOnThread(PVOID param) {
-    auto* post = (StatePost*)param;
-    using Post_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, LPCWSTR);
-    reinterpret_cast<Post_t>(Slot(post->webview, kWebView_PostWebMessageAsString))(post->webview, post->text);
-}
-
-// Sends the state every window now shares, each on its own thread. The list is copied
-// under the lock and the WebViews held across the sends, so a window closing half way
-// through cannot pull one out from under us.
-void BroadcastState() {
-    std::wstring text = L"olkt-state\n" + StateJson();
-    std::vector<PageView> views;
-    AcquireSRWLockShared(&g_viewsLock);
-    for (const PageView& view : g_views) {
-        view.webview->AddRef();
-        views.push_back(view);
-    }
-    ReleaseSRWLockShared(&g_viewsLock);
-    for (const PageView& view : views) {
-        StatePost post{view.webview, text.c_str()};
-        RunForView(view, PostStateOnThread, &post);
-        view.webview->Release();
-    }
-}
-
 // Runs while the hooks are still in place, so every open Outlook window gives the script
 // back before the DLL goes: the styling, the timers and the wrapped fetch all stop at
 // once, with no restart needed.
@@ -1036,7 +1006,7 @@ void Wh_ModSettingsChanged() {
 }
 
 // Runs after Windhawk has removed the hooks, so no new handlers appear. Waits up to
-// 5 seconds for WebView2 to release the ones it still holds before the DLL unloads.
+// two minutes for WebView2 to release the ones it still holds before the DLL unloads.
 void Wh_ModUninit() {
     // Every view was torn down on its own thread above, so what is left is completion
     // handlers for windows that were being created during the disable. WebView2 lets

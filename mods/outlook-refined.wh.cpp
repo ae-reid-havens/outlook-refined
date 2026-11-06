@@ -594,11 +594,17 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // A favorite's name carries its address only while another account has a favorite
   // of the same name, so a lone one is read from the mailbox its row was drawn for.
   // Only the row and the component just above it: further up sits the Favorites
-  // root, whose mailbox is some other account's.
+  // root, whose mailbox is some other account's. A node kept from an earlier render
+  // can still point at the older fiber, so only the one drawn with this name counts.
   function rowAccount(el) {
     try {
       const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
-      for (let f = key && el[key], i = 0; f && i < 2; f = f.return, i++) {
+      const name = el.getAttribute('data-folder-name');
+      const drawn = f => f && f.memoizedProps && f.memoizedProps['data-folder-name'] === name;
+      let f = key && el[key];
+      if (!drawn(f)) f = f && f.alternate;
+      if (!drawn(f)) return '';
+      for (let i = 0; f && i < 2; f = f.return, i++) {
         const box = f.memoizedProps && f.memoizedProps.mailboxInfo;
         if (box && typeof box.mailboxSmtpAddress === 'string') return lower(box.mailboxSmtpAddress);
       }
@@ -606,10 +612,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     return '';
   }
   function accountOf(name, el) {
-    const own = el && rowAccount(el);
-    if (own) return own;
     const m = /\(([^()]+@[^()]+)\)$/.exec(name);
-    return (m ? m[1] : primary()).toLowerCase();
+    return (m ? m[1] : rowAccount(el) || primary()).toLowerCase();
   }
   function favoriteRows() {
     const list = favoritesList();

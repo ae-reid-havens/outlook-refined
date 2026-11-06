@@ -377,10 +377,12 @@
   // "Sent Items (account)" when a second one is added needs no config change.
   // A favorite's name carries its address only while another account has a favorite
   // of the same name, so a lone one is read from the mailbox its row was drawn for.
+  // Only the row and the component just above it: further up sits the Favorites
+  // root, whose mailbox is some other account's.
   function rowAccount(el) {
     try {
       const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
-      for (let f = key && el[key], i = 0; f && i < 4; f = f.return, i++) {
+      for (let f = key && el[key], i = 0; f && i < 2; f = f.return, i++) {
         const box = f.memoizedProps && f.memoizedProps.mailboxInfo;
         if (box && typeof box.mailboxSmtpAddress === 'string') return lower(box.mailboxSmtpAddress);
       }

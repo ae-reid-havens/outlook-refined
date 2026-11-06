@@ -16,8 +16,9 @@ agenda](docs/folder-pane.png)
 
 **Folder pane.** Favorites gather into groups that fold, with a count on a folded group.
 Right-click a group header for its menu; drag a favorite to move it, or Shift+right-click it to
-rename it or move it into a group. Pattern groups fill themselves: the Outgoing group collects every account's
-Drafts, Sent and Outbox, and the Junk group every Junk Email folder. Each account can get a
+rename it or move it into a group. Pattern groups fill themselves from Favorites: the Outgoing group collects
+each account's Drafts, Sent and Outbox, and the Junk group each Junk Email folder, once that folder is a
+favorite (right-click it in its account tree and choose Add to Favorites). Each account can get a
 compose button that starts a new message from that account, and a short label that replaces the
 address Outlook appends to folder names. The pane can be dragged wider, the account trees fold
 under one heading, and accounts reorder by dragging.

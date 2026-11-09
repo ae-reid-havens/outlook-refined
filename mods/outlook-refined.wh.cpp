@@ -2,7 +2,7 @@
 // @id              outlook-refined
 // @name            Outlook Refined
 // @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane, and a print layout
-// @version         0.6.1
+// @version         0.6.2
 // @author          Analytic Endeavors
 // @github          https://github.com/ae-reid-havens
 // @include         olk.exe
@@ -14,6 +14,10 @@
 // ==WindhawkModReadme==
 /*
 # Outlook Refined
+
+By Reid Havens, co-founder of
+[Analytic Endeavors](https://go.analyticendeavors.com/outlook-refined), who builds tools
+like this one for the community.
 
 Restyles the new Outlook for Windows (olk.exe) from inside its own page. The mod
 adds one script to each Outlook window when the window is created, and the

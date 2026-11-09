@@ -565,6 +565,12 @@
     out.push(`.olkt-menu .olkt-sep{height:1px;margin:4px 6px;background:var(--colorNeutralStroke2,#3a3a3a)}`);
     out.push(`.olkt-menu .olkt-sub{padding:6px 12px 2px;font-size:11px;letter-spacing:.06em;color:var(--colorNeutralForeground3,#a3a3a3)}`);
     out.push(`.olkt-tree{box-sizing:border-box!important;max-height:100%!important;overflow-y:auto!important;overflow-x:hidden!important;scrollbar-width:auto!important;scrollbar-color:auto!important}`);
+    // The element holding the tree reserves a scrollbar gutter it never draws in: measured on
+    // a live pane it keeps 18px while its own overflow is hidden, so the folder names were
+    // squeezed into 163px of a 197px pane. Releasing the reservation hands those pixels back
+    // and leaves only the tree's real 8px scrollbar. Scoped to this one element, by the class
+    // the mod puts on the tree, so no other Outlook pane is touched.
+    out.push(`${PANE} div:has(> .olkt-tree){scrollbar-gutter:auto!important}`);
     // A scrollbar like Outlook's own: thin, no arrows, a rounded thumb in the theme's stroke
     // colour, shown while the pointer is over the tree. (scrollbar-width or scrollbar-color
     // would switch these ::-webkit-scrollbar rules off, so neither is set.)

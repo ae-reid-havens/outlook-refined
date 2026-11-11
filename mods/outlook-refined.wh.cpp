@@ -52,7 +52,7 @@ foldable heading, accounts reordered by dragging.
 **Agenda:** today and the next days from every account's calendar at the bottom
 of the folder pane, with a join button for online meetings, under a month grid
 shaded by booked hours. **Other inbox:** the newest Other conversations below
-the Focused list.
+the Focused list. All three start off: turn them on in this mod's Settings tab.
 
 ![Agenda and the Other inbox card](https://raw.githubusercontent.com/ae-reid-havens/outlook-refined/main/docs/other-inbox.png)
 

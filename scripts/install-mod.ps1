@@ -262,6 +262,42 @@ if ($saved) {
     }
     Step "restored $restored settings and $storeCount saved choices from $(Split-Path -Leaf $Settings)"
 }
+# A local build installs as local@<id>, which is a different mod to Windhawk than the store copy
+# at <id>. Its settings and its saved state are separate trees, so a first local install over a
+# store install starts blank: the defaults below fill the settings, but nothing fills the saved
+# state, and the folder groups, account order and pane sizes all disappear from the pane. Carry
+# both across from the store copy when it is present and this install has nothing of its own.
+# (2026-11-10: this is exactly how Reid's favorites organisation vanished.)
+$carriedSet = 0
+$carriedState = 0
+if (-not $saved -and $Full -ne $ModId) {
+    $storeSettings = $hklm.OpenSubKey("$regSub\Engine\Mods\$ModId\Settings")
+    if ($storeSettings -and -not $settingsKey.GetValueNames().Count) {
+        foreach ($name in $storeSettings.GetValueNames()) {
+            $settingsKey.SetValue($name, $storeSettings.GetValue($name), $storeSettings.GetValueKind($name))
+            $carriedSet++
+        }
+        $storeSettings.Close()
+    }
+    elseif ($storeSettings) { $storeSettings.Close() }
+
+    $storeState = $hklm.OpenSubKey("$regSub\Engine\ModsWritable\$ModId\LocalStorage")
+    if ($storeState) {
+        $mine = $hklm.CreateSubKey("$regSub\Engine\ModsWritable\$Full\LocalStorage")
+        if (-not $mine.GetValueNames().Count) {
+            foreach ($name in $storeState.GetValueNames()) {
+                $mine.SetValue($name, $storeState.GetValue($name), $storeState.GetValueKind($name))
+                $carriedState++
+            }
+        }
+        $mine.Close()
+        $storeState.Close()
+    }
+    if ($carriedSet -or $carriedState) {
+        Step "carried $carriedSet settings and $carriedState saved choices across from the store copy"
+    }
+}
+
 $added = @()
 foreach ($name in $defaults.Keys) {
     if ($null -eq $settingsKey.GetValue($name)) {
@@ -271,7 +307,7 @@ foreach ($name in $defaults.Keys) {
 }
 $settingsKey.Close()
 if ($added.Count) { Step "filled in $($added.Count) settings at their defaults: $($added -join ', ')" }
-if ($restored -or $added.Count) {
+if ($restored -or $added.Count -or $carriedSet) {
     $key.SetValue('SettingsChangeTime', [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -band 0x7fffffff), 'DWord')
 }
 

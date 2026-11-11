@@ -2,7 +2,7 @@
 // @id              outlook-refined
 // @name            Outlook Refined
 // @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane, and a print layout
-// @version         0.6.3
+// @version         0.6.4
 // @author          Analytic Endeavors
 // @github          https://github.com/ae-reid-havens
 // @include         olk.exe
@@ -897,6 +897,10 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       fn();
     });
     el.addEventListener('click', ev => ev.stopPropagation());
+    // The second press of a double-click reaches whatever sits under the control. On the
+    // calendar that is Outlook's day grid, which reads a double-click as "new event here"
+    // and opens a blank form. The first press has already acted, so swallow the pair.
+    el.addEventListener('dblclick', ev => { ev.preventDefault(); ev.stopPropagation(); });
     el.addEventListener('keydown', ev => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); fn(); }
     });
@@ -2201,15 +2205,20 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     for (let i = 1; i < 4; i++) out.push(`[data-olkt-ov="c${i}"]{left:${i * 18}px!important;right:0!important;z-index:${i + 1};box-shadow:-2px 0 0 var(--olkt-cal-bg,#1f1f1f)}`);
     out.push(`[data-olkt-ov^="c"]:hover{z-index:4!important}`);
     out.push(`[data-olkt-ov="m"]{opacity:0!important;pointer-events:none!important}`);
-    out.push(`.olkt-merge{position:absolute;left:0;right:0;margin:1px 2px;z-index:3;box-sizing:border-box;display:flex;flex-direction:column;gap:3px;padding:2px 4px;overflow-y:auto;scrollbar-width:none;border-radius:4px;border:1px solid var(--colorNeutralStroke1,#474747);background:var(--colorNeutralBackground3,#2b2b2b);color:var(--colorNeutralForeground1,#fff);font-size:11.5px;line-height:15px}`);
+    out.push(`.olkt-merge{position:absolute;left:0;right:0;margin:1px 2px;z-index:3;box-sizing:border-box;display:flex;overflow:hidden;border-radius:4px;border:1px solid var(--colorNeutralStroke1,#474747);background:var(--colorNeutralBackground3,#2b2b2b);color:var(--colorNeutralForeground1,#fff);font-size:11.5px;line-height:15px}`);
     out.push(`.olkt-merge:is(:hover,:focus-within){height:auto!important;min-height:var(--h);z-index:6;box-shadow:0 4px 12px rgba(0,0,0,.5)}`);
-    out.push(`.olkt-merge .ct{flex:none;font-size:10.5px;font-weight:600;color:var(--colorNeutralForeground3,#adadad);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`);
-    out.push(`.olkt-merge .crow{flex:none;border-left:3px solid var(--edge,#479ef5);padding-left:4px;border-radius:2px;cursor:pointer}`);
+    // The rail carries one segment per event at its true offset and duration, each in a lane
+    // of its own so two that overlap never cover each other.
+    out.push(`.olkt-merge .rail{position:relative;flex:none;width:calc(var(--lanes,1) * 5px + 3px);background:var(--colorNeutralBackground1,#201f1e);border-right:1px solid var(--colorNeutralStroke2,#3a3a38)}`);
+    out.push(`.olkt-merge .rail i{position:absolute;width:4px;border-radius:3px;background:var(--edge,#479ef5)}`);
+    out.push(`.olkt-merge .body{position:relative;flex:1;min-width:0;overflow-y:auto;scrollbar-width:none}`);
+    out.push(`.olkt-merge .cn{position:absolute;top:2px;right:3px;z-index:4;font-size:9.5px;font-weight:700;line-height:1;color:var(--colorNeutralForeground3,#adadad);background:var(--colorNeutralStroke2,#3a3a38);border-radius:8px;padding:2px 6px;pointer-events:none}`);
+    out.push(`.olkt-merge .crow{position:absolute;left:4px;right:4px;border-left:3px solid var(--edge,#479ef5);padding-left:4px;border-radius:2px;cursor:pointer}`);
     out.push(`.olkt-merge .crow:hover{background:var(--colorNeutralBackground1Hover,#333)}`);
     out.push(`.olkt-merge .crow b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`);
-    out.push(`.olkt-merge .crow small{display:block;opacity:.75;font-variant-numeric:tabular-nums}`);
-    out.push(`.olkt-merge .bar{position:relative;height:3px;margin-top:1px;border-radius:2px;background:var(--colorNeutralStroke2,#3d3d3d)}`);
-    out.push(`.olkt-merge .bar i{position:absolute;top:0;bottom:0;border-radius:2px;background:var(--edge,#479ef5)}`);
+    // Both lines stay on one line each: a wrapped time would make the row taller than the
+    // height the rows are spaced by, and they would then sit on top of one another.
+    out.push(`.olkt-merge .crow small{display:block;opacity:.75;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`);
   }
 
   // ==== Other inbox under Focused ====
@@ -3036,6 +3045,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       day.dataset.olktSig = sig;
       overlapDays.add(day);
       day.querySelectorAll(':scope > .olkt-merge').forEach(n => n.remove());
+      // One read per day, not per cluster: rows need pixels to know when they would collide.
+      const dayH = day.getBoundingClientRect().height;
       evs.sort((a, b) => a.s - b.s || (b.e - b.s) - (a.e - a.s));
       const clusters = [];
       for (const v of evs) {
@@ -3048,13 +3059,20 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
           const val = mode === 'c' ? 'c' + Math.min(i, 3) : mode;
           if (val) v.it.setAttribute('data-olkt-ov', val); else v.it.removeAttribute('data-olkt-ov');
         });
-        if (mode === 'm') day.appendChild(mergedTile(list));
+        if (mode === 'm') day.appendChild(mergedTile(list, dayH));
       }
       day.dataset.olktMerges = clusters.filter(c => c.list.length > 1 && c.list.length >= (CAL.mergeAt || 3)).length;
       day.dataset.olktMarked = clusters.reduce((n, c) => n + (c.list.length > 1 ? c.list.length : 0), 0);
     }
   }
-  function mergedTile(list) {
+  // "8:30 AM to 9:30 AM" is wider than a day column in week view, and the end time is the
+  // half that gets clipped. Both times in one half of the day need the AM or PM said once.
+  const span = (from, to) => {
+    if (!from || !to) return from || to || '';
+    const m = /\s([AP]M)$/.exec(from);
+    return m && to.endsWith(m[1]) ? `${from.slice(0, -3)} to ${to}` : `${from} to ${to}`;
+  };
+  function mergedTile(list, dayH) {
     const parse = v => {
       const label = (v.it.querySelector('[role="button"]') || v.it).getAttribute('aria-label') || '';
       const m = /^(.*?), (\d{1,2}:\d{2} [AP]M) to (\d{1,2}:\d{2} [AP]M), /.exec(label);
@@ -3068,27 +3086,64 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     t.style.top = s + '%';
     t.style.height = (e - s) + '%';
     t.style.setProperty('--h', (e - s) + '%');
-    t.append(el('div', 'ct', `${list.length} events, ${first.from} to ${last.to}`));
-    for (const v of list) {
+    // Lanes for the rail: the first lane whose previous event has already ended, or a new one.
+    // Without this two overlapping segments would sit in the same column and hide each other.
+    const order = [...list].sort((a, b) => a.s - b.s || a.e - b.e);
+    const laneEnd = [], lane = new Map();
+    for (const v of order) {
+      let n = laneEnd.findIndex(end => end <= v.s + 0.01);
+      if (n < 0) n = laneEnd.length;
+      laneEnd[n] = v.e;
+      lane.set(v, n);
+    }
+    const rail = el('div', 'rail');
+    rail.style.setProperty('--lanes', String(laneEnd.length));
+    const body = el('div', 'body');
+    const cn = el('div', 'cn', String(list.length));
+    cn.title = `${list.length} events, ${first.from} to ${last.to}`;
+    body.append(cn);
+    // Rows sit at their own start rather than in list order, so each lines up with its rail
+    // segment. Starts closer together than a row is tall would collide, so a row is pushed
+    // down to clear the one above it; the body scrolls, and hovering expands the card.
+    const ROW = 31, GAP = 2;
+    let floor = 0;
+    for (const v of order) {
       const info = parse(v);
       const btn = v.it.querySelector('[role="button"]');
       const r = el('div', 'crow');
       r.setAttribute('role', 'button');
       r.tabIndex = 0;
       r.title = `${info.title}, ${info.from} to ${info.to}`;
-      // The tile's own color strip (a narrow colored box at its left) marks the row and bar.
+      // The tile's own color strip (a narrow colored box at its left) marks the row and segment.
       const strip = [...v.it.querySelectorAll('div')].find(d => d.getBoundingClientRect().width <= 8 && getComputedStyle(d).backgroundColor !== 'rgba(0, 0, 0, 0)');
-      if (strip) r.style.setProperty('--edge', getComputedStyle(strip).backgroundColor);
-      const bar = el('div', 'bar'), i = el('i');
-      i.style.left = ((v.s - s) / (e - s)) * 100 + '%';
-      i.style.width = ((v.e - v.s) / (e - s)) * 100 + '%';
-      bar.append(i);
-      r.append(el('b', null, info.title), el('small', null, `${info.from} to ${info.to}`), bar);
+      const edge = strip ? getComputedStyle(strip).backgroundColor : '';
+      if (edge) r.style.setProperty('--edge', edge);
+      const seg = el('i');
+      seg.style.top = ((v.s - s) / (e - s)) * 100 + '%';
+      seg.style.height = ((v.e - v.s) / (e - s)) * 100 + '%';
+      seg.style.left = (lane.get(v) * 5 + 3) + 'px';
+      if (edge) seg.style.setProperty('--edge', edge);
+      rail.append(seg);
+      // dayH is the day box in pixels, so the row's own offset is its share of that box.
+      const want = dayH > 0 ? ((v.s - s) / 100) * dayH : floor;
+      const top = Math.max(want, floor);
+      floor = top + ROW + GAP;
+      r.style.top = top + 'px';
+      const name = el('b', null, info.title);
+      // Only the title shares a line with the count badge, so the time keeps the full width.
+      if (top < 18) name.style.paddingRight = '26px';
+      r.append(name, el('small', null, span(info.from, info.to)));
       // Looked up at click time: Outlook may have re-created the tile since this was built.
       const id = v.it.getAttribute('data-calitemid');
       onPress(r, () => { const b = document.querySelector(`[data-calitemid="${CSS.escape(id)}"] [role="button"]`) || btn; if (b) b.click(); }); // Outlook opens its own event card
-      t.append(r);
+      body.append(r);
     }
+    // Abspos rows give the body no height of its own, so hover-to-expand needs this.
+    body.style.minHeight = Math.max(0, floor - GAP) + 'px';
+    t.append(rail, body);
+    // The count header and the gaps between rows are not press targets, so a double-click
+    // landing on them would still reach the day grid underneath.
+    t.addEventListener('dblclick', ev => { ev.preventDefault(); ev.stopPropagation(); });
     return t;
   }
 

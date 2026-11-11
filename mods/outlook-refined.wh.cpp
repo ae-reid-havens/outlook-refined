@@ -887,17 +887,26 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     return list && list.querySelector(':scope > div > [role="treeitem"]') ? list : null;
   }
 
+  // Windows counts a second click inside 500ms as a double; 400 covers it without blocking
+  // someone deliberately pressing the same control twice.
+  const DOUBLE_MS = 400;
   function onPress(el, fn) {
+    let lastAt = -Infinity;
     // Act on press, not click: Outlook's focus manager re-renders the tree
     // between press and release, so a click event often never arrives.
     el.addEventListener('pointerdown', ev => {
       if (ev.button !== 0) return;
       ev.preventDefault();
       ev.stopPropagation();
-      // Still swallowed, but not acted on twice: the second press of a double-click carries
-      // detail 2, and running again would re-click Outlook's tile and toggle the card it
-      // just opened back shut. Double-clicking a row therefore behaves like a single click.
-      if (ev.detail > 1) return;
+      // Still swallowed, but not acted on twice. Running again would re-click Outlook's tile
+      // and toggle the card the first press opened back shut, which is what made a
+      // double-click look like it did nothing. A double-click now behaves as a single one.
+      // Timing, not ev.detail: on a pointerdown detail is 0 by spec, whatever the click
+      // count, so a detail test here never fires. (It does fire for CDP's synthetic events,
+      // which is how a test of this passed while real double-clicks stayed broken.)
+      const now = ev.timeStamp || performance.now();
+      if (now - lastAt < DOUBLE_MS) return;
+      lastAt = now;
       fn();
     });
     el.addEventListener('click', ev => ev.stopPropagation());

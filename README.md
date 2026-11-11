@@ -27,7 +27,8 @@ under one heading, and accounts reorder by dragging.
 folder pane, each event in its calendar's color, with Outlook's own event icons, a marker on
 repeating events and a join button for online meetings. Above the feed, a month grid shades
 each day by how many hours are booked; its arrows browse other months and a day opens its
-events.
+events. The agenda and the month grid start off: turn them on in the mod's Settings tab in
+Windhawk, then quit Outlook from its tray icon and open it again.
 
 **Other inbox.** Optionally, the newest conversations from an inbox's Other tab sit below the
 Focused list, drawn from Outlook's own list rows so they match it exactly. A button beside the

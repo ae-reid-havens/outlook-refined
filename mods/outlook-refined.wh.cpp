@@ -3093,6 +3093,22 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     const m = /\s([AP]M)$/.exec(from);
     return m && to.endsWith(m[1]) ? `${from.slice(0, -3)} to ${to}` : `${from} to ${to}`;
   };
+  // Double-clicking an Outlook tile opens the event in a window of its own. A synthetic
+  // dblclick on the tile does nothing, so the route is the one a person would take: the press
+  // that started the double-click has already opened the peek, and the peek carries a
+  // "View event" button that opens the window. The peek takes a moment to arrive, so this
+  // waits for it rather than firing once and missing.
+  function openFull() {
+    let tries = 0;
+    const tick = () => {
+      const b = [...document.querySelectorAll('button,[role="button"]')]
+        .find(n => n.offsetParent && /view event/i.test(n.getAttribute('aria-label') || ''));
+      if (b) { b.click(); return; }
+      if (++tries < 25) setTimeout(tick, 100);
+    };
+    tick();
+  }
+
   function mergedTile(list, dayH) {
     const parse = v => {
       const label = (v.it.querySelector('[role="button"]') || v.it).getAttribute('aria-label') || '';
@@ -3156,7 +3172,23 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       r.append(name, el('small', null, span(info.from, info.to)));
       // Looked up at click time: Outlook may have re-created the tile since this was built.
       const id = v.it.getAttribute('data-calitemid');
-      onPress(r, () => { const b = document.querySelector(`[data-calitemid="${CSS.escape(id)}"] [role="button"]`) || btn; if (b) b.click(); }); // Outlook opens its own event card
+      // Looked up at press time: Outlook may have re-created the tile since this was built.
+      const live = () => document.querySelector(`[data-calitemid="${CSS.escape(id)}"]`);
+      const target = () => { const t2 = live(); return (t2 && t2.querySelector('[role="button"]')) || t2 || btn; };
+      onPress(r, () => { const b = target(); if (b) b.click(); }); // Outlook opens its own event card
+      // A row answers the same three gestures an Outlook tile does. Anything left unhandled
+      // travels to the day grid underneath, which answers for itself: a double-click there
+      // means "new event here" and a right-click there offers New event and Go to today.
+      r.addEventListener('contextmenu', ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const b = target();
+        if (!b) return;
+        // Forwarded with the pointer's own coordinates so Outlook places its menu at the row.
+        b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window,
+          button: 2, buttons: 2, clientX: ev.clientX, clientY: ev.clientY }));
+      }, true);
+      r.addEventListener('dblclick', ev => { ev.preventDefault(); ev.stopPropagation(); openFull(); }, true);
       pad.append(r);
     }
     // Abspos rows give the spacer no height of its own, so it is set from the last row.

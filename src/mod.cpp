@@ -2,7 +2,7 @@
 // @id              outlook-refined
 // @name            Outlook Refined
 // @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane, and a print layout
-// @version         0.6.4
+// @version         0.6.5
 // @author          Analytic Endeavors
 // @github          https://github.com/ae-reid-havens
 // @include         olk.exe
@@ -29,7 +29,8 @@ Outlook's mail service as described below.
 
 ![Folder pane](https://raw.githubusercontent.com/ae-reid-havens/outlook-refined/main/docs/folder-pane.png)
 
-Restart Outlook after enabling the mod or changing a setting.
+Restart Outlook after enabling the mod. A changed setting reaches each open
+Outlook window the next time you switch to it.
 
 **What it asks Outlook for.** The agenda, month grid and Other inbox card read
 your calendar and inbox through Outlook's own mail service, from inside its
@@ -321,13 +322,14 @@ void LoadStore() {
     ReleaseSRWLockExclusive(&g_storeLock);
 }
 
-// The saved state as a JSON object, for the answer to a page that asks for it.
-std::wstring StateJson() {
-    std::wstring object = L"{";
+// The saved state as a JSON object, for the answer to a page that asks for it. The
+// current settings ride along under "config", so an open window that started on older
+// ones can start again on these.
+std::wstring StateJson(const std::wstring& config) {
+    std::wstring object = L"{\"config\":" + (config.empty() ? std::wstring(L"null") : config);
     AcquireSRWLockShared(&g_storeLock);
     for (const auto& [key, value] : g_store) {
-        if (object.size() > 1) object += L",";
-        object += JsonString(key.c_str()) + L":" + JsonString(value.c_str());
+        object += L"," + JsonString(key.c_str()) + L":" + JsonString(value.c_str());
     }
     ReleaseSRWLockShared(&g_storeLock);
     return object + L"}";
@@ -355,9 +357,11 @@ void MakeKey() {
 
 SRWLOCK g_scriptLock = SRWLOCK_INIT;
 std::wstring g_script;
+std::wstring g_config; // the settings without the key, for state answers
 
 // Wraps the page as `{ const OLKT_CONFIG = {...}; <page> }`. Windows created after a
-// settings change get the new settings; open windows keep theirs until a restart.
+// settings change get the new settings; open windows get them in their next state
+// answer and start the page again on them.
 void BuildScript() {
     std::wstring json = L"{";
     AddBool(json, L"favoritesGroups");
@@ -388,12 +392,23 @@ void BuildScript() {
     AddString(json, L"printFit");
     AddBool(json, L"printKeepChartsWhole");
     AddString(json, L"printQuotedReplies");
+    // The key stays out of what is answered: an answer can land on a page that has just
+    // navigated away from Outlook.
+    std::wstring config = json + L"}";
     AddField(json, L"key", JsonString(g_key.c_str()));
     json += L"}";
     std::wstring script = L"{\nconst OLKT_CONFIG = " + json + L";\n" + kPageScript + L"\n}";
     AcquireSRWLockExclusive(&g_scriptLock);
     g_script.swap(script);
+    g_config.swap(config);
     ReleaseSRWLockExclusive(&g_scriptLock);
+}
+
+std::wstring CurrentConfig() {
+    AcquireSRWLockShared(&g_scriptLock);
+    std::wstring config = g_config;
+    ReleaseSRWLockShared(&g_scriptLock);
+    return config;
 }
 
 // ==== WebView2 hooks ====
@@ -511,7 +526,7 @@ void HandleMessage(IUnknown* sender, PCWSTR text) {
         StoreValue(message.substr(0, name), message.substr(name + 1));
         return;
     }
-    std::wstring answer = L"olkt-state\n" + StateJson();
+    std::wstring answer = L"olkt-state\n" + StateJson(CurrentConfig());
     using Post_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, LPCWSTR);
     reinterpret_cast<Post_t>(Slot(sender, kWebView_PostWebMessageAsString))(sender, answer.c_str());
 }

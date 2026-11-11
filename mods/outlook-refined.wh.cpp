@@ -2,7 +2,7 @@
 // @id              outlook-refined
 // @name            Outlook Refined
 // @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane, and a print layout
-// @version         0.6.4
+// @version         0.6.5
 // @author          Analytic Endeavors
 // @github          https://github.com/ae-reid-havens
 // @include         olk.exe
@@ -29,7 +29,8 @@ Outlook's mail service as described below.
 
 ![Folder pane](https://raw.githubusercontent.com/ae-reid-havens/outlook-refined/main/docs/folder-pane.png)
 
-Restart Outlook after enabling the mod or changing a setting.
+Restart Outlook after enabling the mod. A changed setting reaches each open
+Outlook window the next time you switch to it.
 
 **What it asks Outlook for.** The agenda, month grid and Other inbox card read
 your calendar and inbox through Outlook's own mail service, from inside its
@@ -224,7 +225,9 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
 // attributes, never by generated class names) plus elements of our own (group
 // headers, compose buttons, menus, the resize handle). Outlook's own nodes are
 // never moved, so its React tree stays intact.
-(() => {
+// A function rather than a one-off, so that settings changed in Windhawk can start the
+// page again on the new ones (see the state answer handler in `store`).
+const runPage = OLKT_CONFIG => {
   // Outlook has hidden subframes with folder trees of their own; only the main window is ours.
   if (window.top !== window) return 'skipped subframe';
   // Outlook opens WebViews for pages of its own and for add-in dialogs, which load
@@ -387,6 +390,9 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
   // WebView's message channel and sends each change back the same way. Nothing of ours
   // is left in Outlook's profile when the mod goes.
   const S = OLKT_CONFIG;
+  // The settings as the mod sends them in each state answer, without the per-load key.
+  const configText = ({ key, ...rest }) => JSON.stringify(rest);
+  const CONFIG_TEXT = configText(S);
   const STORE_KEYS = [FOLD_KEY, WIDTH_KEY, FAVORITES_KEY, ACCOUNT_ORDER_KEY, 'olkt-agenda-height', 'olkt-other-height', 'olkt-other-split', 'olkt-other-folds'];
   const store = (() => {
     const mem = new Map();
@@ -433,11 +439,20 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
         if (!text.startsWith('olkt-state\n')) return;
         const n = received = Math.min(received + 1, sent);
         const next = new Map();
-        let parsed = true;
+        let parsed = true, config = null;
         try {
           const saved = JSON.parse(text.slice('olkt-state\n'.length));
           for (const key of STORE_KEYS) if (typeof saved[key] === 'string') next.set(key, saved[key]);
+          if (saved.config && typeof saved.config === 'object') config = saved.config;
         } catch { parsed = false; }
+        // Settings changed in Windhawk since this copy started: a new copy takes over on
+        // them (its generation check tears this one down) and asks for the state itself.
+        if (config && configText(config) !== CONFIG_TEXT) {
+          try { runPage({ ...config, key: S.key }); } catch (err) {
+            console.warn(`outlook-refined: the changed settings did not apply (${err.message}); restart Outlook to load them`);
+          }
+          return;
+        }
         // A value this page wrote after this question went out is newer than the answer.
         if (parsed) for (const [k, after] of writtenAfter) if (after >= n) { if (mem.has(k)) next.set(k, mem.get(k)); else next.delete(k); }
         for (const [k, after] of writtenAfter) if (after <= n) writtenAfter.delete(k);
@@ -3387,7 +3402,8 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
 
   if (document.body) start(); else addEventListener('DOMContentLoaded', start, { once: true });
   return 'installed';
-})())olkt";
+};
+runPage(OLKT_CONFIG))olkt";
 
 // ==== settings to OLKT_CONFIG ====
 
@@ -3490,13 +3506,14 @@ void LoadStore() {
     ReleaseSRWLockExclusive(&g_storeLock);
 }
 
-// The saved state as a JSON object, for the answer to a page that asks for it.
-std::wstring StateJson() {
-    std::wstring object = L"{";
+// The saved state as a JSON object, for the answer to a page that asks for it. The
+// current settings ride along under "config", so an open window that started on older
+// ones can start again on these.
+std::wstring StateJson(const std::wstring& config) {
+    std::wstring object = L"{\"config\":" + (config.empty() ? std::wstring(L"null") : config);
     AcquireSRWLockShared(&g_storeLock);
     for (const auto& [key, value] : g_store) {
-        if (object.size() > 1) object += L",";
-        object += JsonString(key.c_str()) + L":" + JsonString(value.c_str());
+        object += L"," + JsonString(key.c_str()) + L":" + JsonString(value.c_str());
     }
     ReleaseSRWLockShared(&g_storeLock);
     return object + L"}";
@@ -3524,9 +3541,11 @@ void MakeKey() {
 
 SRWLOCK g_scriptLock = SRWLOCK_INIT;
 std::wstring g_script;
+std::wstring g_config; // the settings without the key, for state answers
 
 // Wraps the page as `{ const OLKT_CONFIG = {...}; <page> }`. Windows created after a
-// settings change get the new settings; open windows keep theirs until a restart.
+// settings change get the new settings; open windows get them in their next state
+// answer and start the page again on them.
 void BuildScript() {
     std::wstring json = L"{";
     AddBool(json, L"favoritesGroups");
@@ -3557,12 +3576,23 @@ void BuildScript() {
     AddString(json, L"printFit");
     AddBool(json, L"printKeepChartsWhole");
     AddString(json, L"printQuotedReplies");
+    // The key stays out of what is answered: an answer can land on a page that has just
+    // navigated away from Outlook.
+    std::wstring config = json + L"}";
     AddField(json, L"key", JsonString(g_key.c_str()));
     json += L"}";
     std::wstring script = L"{\nconst OLKT_CONFIG = " + json + L";\n" + kPageScript + L"\n}";
     AcquireSRWLockExclusive(&g_scriptLock);
     g_script.swap(script);
+    g_config.swap(config);
     ReleaseSRWLockExclusive(&g_scriptLock);
+}
+
+std::wstring CurrentConfig() {
+    AcquireSRWLockShared(&g_scriptLock);
+    std::wstring config = g_config;
+    ReleaseSRWLockShared(&g_scriptLock);
+    return config;
 }
 
 // ==== WebView2 hooks ====
@@ -3680,7 +3710,7 @@ void HandleMessage(IUnknown* sender, PCWSTR text) {
         StoreValue(message.substr(0, name), message.substr(name + 1));
         return;
     }
-    std::wstring answer = L"olkt-state\n" + StateJson();
+    std::wstring answer = L"olkt-state\n" + StateJson(CurrentConfig());
     using Post_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, LPCWSTR);
     reinterpret_cast<Post_t>(Slot(sender, kWebView_PostWebMessageAsString))(sender, answer.c_str());
 }

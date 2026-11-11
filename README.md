@@ -28,7 +28,7 @@ folder pane, each event in its calendar's color, with Outlook's own event icons,
 repeating events and a join button for online meetings. Above the feed, a month grid shades
 each day by how many hours are booked; its arrows browse other months and a day opens its
 events. The agenda and the month grid start off: turn them on in the mod's Settings tab in
-Windhawk, then quit Outlook from its tray icon and open it again.
+Windhawk, and they appear the next time you switch to Outlook.
 
 **Other inbox.** Optionally, the newest conversations from an inbox's Other tab sit below the
 Focused list, drawn from Outlook's own list rows so they match it exactly. A button beside the
@@ -66,8 +66,8 @@ The last of these catches people out, so check it before you file a bug:
 - The new Outlook for Windows (`olk.exe`), the one built on WebView2. Classic Outlook and the
   Microsoft Store "Mail" app are different programs, and this mod does not touch them.
 - Windhawk 1.4 or newer.
-- Restart Outlook after enabling the mod or changing a setting. Windows that are already open
-  keep the script they started with.
+- Restart Outlook after enabling the mod; windows that are already open never see it. A changed
+  setting reaches each open window the next time you switch to it.
 
 ## Install
 

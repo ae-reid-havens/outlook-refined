@@ -894,6 +894,10 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       if (ev.button !== 0) return;
       ev.preventDefault();
       ev.stopPropagation();
+      // Still swallowed, but not acted on twice: the second press of a double-click carries
+      // detail 2, and running again would re-click Outlook's tile and toggle the card it
+      // just opened back shut. Double-clicking a row therefore behaves like a single click.
+      if (ev.detail > 1) return;
       fn();
     });
     el.addEventListener('click', ev => ev.stopPropagation());
@@ -2209,9 +2213,15 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     out.push(`.olkt-merge:is(:hover,:focus-within){height:auto!important;min-height:var(--h);z-index:6;box-shadow:0 4px 12px rgba(0,0,0,.5)}`);
     // The rail carries one segment per event at its true offset and duration, each in a lane
     // of its own so two that overlap never cover each other.
-    out.push(`.olkt-merge .rail{position:relative;flex:none;width:calc(var(--lanes,1) * 5px + 3px);background:var(--colorNeutralBackground1,#201f1e);border-right:1px solid var(--colorNeutralStroke2,#3a3a38)}`);
+    // The rail keeps the calendar's own scale: its height is the cluster's real span in
+    // pixels and it does not stretch, so expanding the card on hover cannot restretch the
+    // segments away from the rows, which are placed in those same pixels.
+    out.push(`.olkt-merge .rail{position:relative;flex:none;align-self:flex-start;width:calc(var(--lanes,1) * 5px + 3px);background:var(--colorNeutralBackground1,#201f1e);border-right:1px solid var(--colorNeutralStroke2,#3a3a38)}`);
     out.push(`.olkt-merge .rail i{position:absolute;width:4px;border-radius:3px;background:var(--edge,#479ef5)}`);
-    out.push(`.olkt-merge .body{position:relative;flex:1;min-width:0;overflow-y:auto;scrollbar-width:none}`);
+    // The rows' full height lives on the spacer inside the body rather than on the body, so
+    // a collapsed card scrolls through them instead of being exactly as tall as they are.
+    out.push(`.olkt-merge .body{flex:1;min-width:0;overflow-y:auto;scrollbar-width:none}`);
+    out.push(`.olkt-merge .pad{position:relative}`);
     out.push(`.olkt-merge .cn{position:absolute;top:2px;right:3px;z-index:4;font-size:9.5px;font-weight:700;line-height:1;color:var(--colorNeutralForeground3,#adadad);background:var(--colorNeutralStroke2,#3a3a38);border-radius:8px;padding:2px 6px;pointer-events:none}`);
     out.push(`.olkt-merge .crow{position:absolute;left:4px;right:4px;border-left:3px solid var(--edge,#479ef5);padding-left:4px;border-radius:2px;cursor:pointer}`);
     out.push(`.olkt-merge .crow:hover{background:var(--colorNeutralBackground1Hover,#333)}`);
@@ -3038,15 +3048,17 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     for (const [day, evs] of days) {
       // Redone when tiles move, are renamed, or are re-created as new nodes (which lose their marks).
       const label = it => (it.querySelector('[role="button"]') || it).getAttribute('aria-label') || '';
-      const sig = evs.map(v => `${v.it.getAttribute('data-calitemid')}@${v.s},${v.e}:${label(v.it)}`).sort().join('|');
+      // One read per day. Rows are placed in pixels, so the day's height belongs in the
+      // signature too: resize the window and the percentages are unchanged while every row
+      // offset is wrong, which the old signature could not see.
+      const dayH = day.getBoundingClientRect().height;
+      const sig = evs.map(v => `${v.it.getAttribute('data-calitemid')}@${v.s},${v.e}:${label(v.it)}`).sort().join('|') + `#${Math.round(dayH)}`;
       const marked = evs.filter(v => v.it.hasAttribute('data-olkt-ov')).length;
       if (day.dataset.olktSig === sig && marked === Number(day.dataset.olktMarked || 0) &&
         day.querySelectorAll(':scope > .olkt-merge').length === Number(day.dataset.olktMerges || 0)) continue;
       day.dataset.olktSig = sig;
       overlapDays.add(day);
       day.querySelectorAll(':scope > .olkt-merge').forEach(n => n.remove());
-      // One read per day, not per cluster: rows need pixels to know when they would collide.
-      const dayH = day.getBoundingClientRect().height;
       evs.sort((a, b) => a.s - b.s || (b.e - b.s) - (a.e - a.s));
       const clusters = [];
       for (const v of evs) {
@@ -3098,10 +3110,10 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
     }
     const rail = el('div', 'rail');
     rail.style.setProperty('--lanes', String(laneEnd.length));
-    const body = el('div', 'body');
+    if (dayH > 0) rail.style.height = ((e - s) / 100) * dayH + 'px';
+    const body = el('div', 'body'), pad = el('div', 'pad');
     const cn = el('div', 'cn', String(list.length));
     cn.title = `${list.length} events, ${first.from} to ${last.to}`;
-    body.append(cn);
     // Rows sit at their own start rather than in list order, so each lines up with its rail
     // segment. Starts closer together than a row is tall would collide, so a row is pushed
     // down to clear the one above it; the body scrolls, and hovering expands the card.
@@ -3136,11 +3148,12 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
       // Looked up at click time: Outlook may have re-created the tile since this was built.
       const id = v.it.getAttribute('data-calitemid');
       onPress(r, () => { const b = document.querySelector(`[data-calitemid="${CSS.escape(id)}"] [role="button"]`) || btn; if (b) b.click(); }); // Outlook opens its own event card
-      body.append(r);
+      pad.append(r);
     }
-    // Abspos rows give the body no height of its own, so hover-to-expand needs this.
-    body.style.minHeight = Math.max(0, floor - GAP) + 'px';
-    t.append(rail, body);
+    // Abspos rows give the spacer no height of its own, so it is set from the last row.
+    pad.style.height = Math.max(0, floor - GAP) + 'px';
+    body.append(pad);
+    t.append(rail, body, cn);
     // The count header and the gaps between rows are not press targets, so a double-click
     // landing on them would still reach the day grid underneath.
     t.addEventListener('dblclick', ev => { ev.preventDefault(); ev.stopPropagation(); });

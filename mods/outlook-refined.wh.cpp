@@ -227,7 +227,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
 // never moved, so its React tree stays intact.
 // A function rather than a one-off, so that settings changed in Windhawk can start the
 // page again on the new ones (see the state answer handler in `store`).
-const runPage = OLKT_CONFIG => {
+const runPage = (OLKT_CONFIG, carried) => {
   // Outlook has hidden subframes with folder trees of their own; only the main window is ours.
   if (window.top !== window) return 'skipped subframe';
   // Outlook opens WebViews for pages of its own and for add-in dialogs, which load
@@ -396,13 +396,17 @@ const runPage = OLKT_CONFIG => {
   const STORE_KEYS = [FOLD_KEY, WIDTH_KEY, FAVORITES_KEY, ACCOUNT_ORDER_KEY, 'olkt-agenda-height', 'olkt-other-height', 'olkt-other-split', 'olkt-other-folds'];
   const store = (() => {
     const mem = new Map();
+    // A copy started by a settings change takes over the state the copy before it had
+    // just read, so it draws with it at once and accepts writes from the start.
+    if (carried) for (const [k, v] of carried) mem.set(k, v);
     const channel = (() => { try { return window.chrome.webview; } catch { return null; } })();
     // Every message carries the key the mod put in this script. A page in another
     // WebView, an add-in dialog for instance, shares the message channel but never sees
     // the script, so it cannot ask for the state or change it.
     const post = text => { try { channel.postMessage(text); } catch {} };
-    let loaded = false;
+    let loaded = !!carried;
     let onMessage = null;
+    let failedConfig = '';
     // The state is asked for rather than baked into this script: a window that reloads
     // then starts from what is saved now, not from what was saved when it opened. It is
     // asked for again whenever the window is shown or focused, and whenever the pointer
@@ -445,16 +449,20 @@ const runPage = OLKT_CONFIG => {
           for (const key of STORE_KEYS) if (typeof saved[key] === 'string') next.set(key, saved[key]);
           if (saved.config && typeof saved.config === 'object') config = saved.config;
         } catch { parsed = false; }
-        // Settings changed in Windhawk since this copy started: a new copy takes over on
-        // them (its generation check tears this one down) and asks for the state itself.
-        if (config && configText(config) !== CONFIG_TEXT) {
-          try { runPage({ ...config, key: S.key }); } catch (err) {
-            console.warn(`outlook-refined: the changed settings did not apply (${err.message}); restart Outlook to load them`);
-          }
-          return;
-        }
         // A value this page wrote after this question went out is newer than the answer.
         if (parsed) for (const [k, after] of writtenAfter) if (after >= n) { if (mem.has(k)) next.set(k, mem.get(k)); else next.delete(k); }
+        // Settings changed in Windhawk since this copy started: a new copy takes over on
+        // them with this state (its generation check tears this one down) and asks again
+        // itself. Settings that a new copy failed to start on are not tried twice.
+        if (config) {
+          const changed = configText(config);
+          if (changed !== CONFIG_TEXT && changed !== failedConfig) {
+            try { runPage({ ...config, key: S.key }, next); return; } catch (err) {
+              failedConfig = changed;
+              console.warn(`outlook-refined: the changed settings did not apply (${err.message}); restart Outlook to load them`);
+            }
+          }
+        }
         for (const [k, after] of writtenAfter) if (after <= n) writtenAfter.delete(k);
         if (again) { again = false; ask(); }
         // An answer that will not parse: a page still waiting for its first one asks again.
@@ -491,6 +499,8 @@ const runPage = OLKT_CONFIG => {
         post('olkt-set\n' + S.key + '\n' + key + '\n');
       },
       stop() {
+        // A copy that has been replaced saves nothing more over the one that replaced it.
+        loaded = false;
         clearTimeout(retry);
         window.removeEventListener('focus', ask);
         document.removeEventListener('visibilitychange', onVisible);
@@ -3312,6 +3322,8 @@ const runPage = OLKT_CONFIG => {
   const onDocKey = ev => { if (ev.key === 'Escape') closeMenus(); };
 
   function start() {
+    // A copy replaced before the page finished loading never starts.
+    if (!current()) return;
     render();
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['title'] });
     document.addEventListener('pointerdown', onDocPointer, true);

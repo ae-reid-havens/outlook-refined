@@ -227,7 +227,7 @@ const wchar_t kPageScript[] = LR"olkt(// Runs inside Outlook's page. The Windhaw
 // never moved, so its React tree stays intact.
 // A function rather than a one-off, so that settings changed in Windhawk can start the
 // page again on the new ones (see the state answer handler in `store`).
-const runPage = (OLKT_CONFIG, carried) => {
+const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   // Outlook has hidden subframes with folder trees of their own; only the main window is ours.
   if (window.top !== window) return 'skipped subframe';
   // Outlook opens WebViews for pages of its own and for add-in dialogs, which load
@@ -407,6 +407,9 @@ const runPage = (OLKT_CONFIG, carried) => {
     let loaded = !!carried;
     let onMessage = null;
     let failedConfig = '';
+    // Answers still owed to the copy this one replaced come first (the mod answers in
+    // order) and are older than the state it handed over, so they are passed over.
+    let owed = owedAnswers || 0;
     // The state is asked for rather than baked into this script: a window that reloads
     // then starts from what is saved now, not from what was saved when it opened. It is
     // asked for again whenever the window is shown or focused, and whenever the pointer
@@ -441,6 +444,7 @@ const runPage = (OLKT_CONFIG, carried) => {
       onMessage = ev => {
         const text = typeof ev.data === 'string' ? ev.data : '';
         if (!text.startsWith('olkt-state\n')) return;
+        if (owed > 0) { owed--; return; }
         const n = received = Math.min(received + 1, sent);
         const next = new Map();
         let parsed = true, config = null;
@@ -453,14 +457,17 @@ const runPage = (OLKT_CONFIG, carried) => {
         if (parsed) for (const [k, after] of writtenAfter) if (after >= n) { if (mem.has(k)) next.set(k, mem.get(k)); else next.delete(k); }
         // Settings changed in Windhawk since this copy started: a new copy takes over on
         // them with this state (its generation check tears this one down) and asks again
-        // itself. Settings that a new copy failed to start on are not tried twice.
-        if (config) {
+        // itself. Settings that a new copy failed to start on are not tried twice. An open
+        // rename box or menu is left alone: a later answer carries the same settings.
+        if (config && !document.querySelector('.olkt-rename, .olkt-menu')) {
           const changed = configText(config);
           if (changed !== CONFIG_TEXT && changed !== failedConfig) {
-            try { runPage({ ...config, key: S.key }, next); return; } catch (err) {
+            try { runPage({ ...config, key: S.key }, next, sent - n); return; } catch (err) {
               failedConfig = changed;
               console.warn(`outlook-refined: the changed settings did not apply (${err.message}); restart Outlook to load them`);
             }
+            // A new copy that failed after taking over has already torn this one down.
+            if (!current()) return;
           }
         }
         for (const [k, after] of writtenAfter) if (after <= n) writtenAfter.delete(k);
@@ -3202,7 +3209,6 @@ const runPage = (OLKT_CONFIG, carried) => {
       // Only the title shares a line with the count badge, so the time keeps the full width.
       if (top < 18) name.style.paddingRight = '26px';
       r.append(name, el('small', null, span(info.from, info.to)));
-      // Looked up at click time: Outlook may have re-created the tile since this was built.
       const id = v.it.getAttribute('data-calitemid');
       // Looked up at press time: Outlook may have re-created the tile since this was built.
       const live = () => document.querySelector(`[data-calitemid="${CSS.escape(id)}"]`);

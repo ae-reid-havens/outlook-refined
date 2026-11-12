@@ -270,7 +270,7 @@ if ($saved) {
 # (2026-11-10: this is exactly how Reid's favorites organisation vanished.)
 $carriedSet = 0
 $carriedState = 0
-if (-not $saved -and $Full -ne $ModId) {
+if (-not $saved) {
     $storeSettings = $hklm.OpenSubKey("$regSub\Engine\Mods\$ModId\Settings")
     if ($storeSettings -and -not $settingsKey.GetValueNames().Count) {
         foreach ($name in $storeSettings.GetValueNames()) {
@@ -296,6 +296,16 @@ if (-not $saved -and $Full -ne $ModId) {
     if ($carriedSet -or $carriedState) {
         Step "carried $carriedSet settings and $carriedState saved choices across from the store copy"
     }
+}
+# Both copies load into Outlook if both are on, each with its own state, and whichever starts
+# last takes the window. The store copy goes off; its toggle in Windhawk switches back.
+$storeMod = $hklm.OpenSubKey("$regSub\Engine\Mods\$ModId", $true)
+if ($storeMod) {
+    if ($storeMod.GetValue('Disabled') -ne 1) {
+        $storeMod.SetValue('Disabled', 1, 'DWord')
+        Step "turned off the store copy ($ModId) so only this build runs; turn it back on in Windhawk to switch back"
+    }
+    $storeMod.Close()
 }
 
 $added = @()

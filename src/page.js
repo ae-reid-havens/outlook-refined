@@ -2013,7 +2013,9 @@ const runPage = (OLKT_CONFIG, carried) => {
     const GRID = 'body:has([data-tabid="surfaceHeader_timeStripHeader"])';
     if (S.tileTimes) {
       // Only tiles whose time was read (data-olkt-time): all-day and unusual tiles keep every line.
-      out.push(`${GRID} ${CALTILE}:has(> div > [data-olkt-time]) > div > div:nth-child(n+2):not(:has(i)){display:none!important}`);
+      // The lines after the title go; a Join button row before it stays, beside the title.
+      out.push(`${GRID} ${CALTILE} > div > [data-olkt-time] ~ div:not(:has(i)){display:none!important}`);
+      out.push(`${GRID} ${CALTILE} > div:has(> [data-olkt-time]) > div:has(> button:only-child):not([data-olkt-time]){float:right;margin-left:4px}`);
       out.push(`${GRID} [data-olkt-time]::after{content:attr(data-olkt-time);display:block;font-weight:400;font-size:11.5px;opacity:.8}`);
     }
     // Overlaps (ensureOverlap): two events cascade, the later one 18px in and on top;
@@ -2826,10 +2828,15 @@ const runPage = (OLKT_CONFIG, carried) => {
       if (t.getAttribute('data-olkt-short') !== s.label) t.setAttribute('data-olkt-short', s.label);
       t.toggleAttribute('data-olkt-off', s.h24 < 9 || s.h24 >= 17);
     }
-    // Tiles: the time from the tile's own label, under the title.
+    // Tiles: the time from the tile's own label, under the title. A meeting about to start
+    // has a row holding only its Join button before the title, so that row is skipped.
+    const joinRow = r => r.children.length === 1 && r.firstElementChild.tagName === 'BUTTON';
     for (const tile of S.tileTimes ? document.querySelectorAll(CALTILE) : []) {
       const m = /(\d{1,2}:\d{2}) ([AP]M) to (\d{1,2}:\d{2}) ([AP]M)/.exec(tile.getAttribute('aria-label') || '');
-      const title = tile.firstElementChild && tile.firstElementChild.firstElementChild;
+      const rows = tile.firstElementChild ? [...tile.firstElementChild.children] : [];
+      const title = rows.find(r => !joinRow(r));
+      // Outlook reuses tile nodes, and the Join row comes and goes: no other row keeps a mark.
+      for (const r of rows) if (r !== title && r.hasAttribute('data-olkt-time')) r.removeAttribute('data-olkt-time');
       if (!title) continue;
       if (!m) { title.removeAttribute('data-olkt-time'); continue; } // Outlook reuses tile nodes
       const when = m[2] === m[4] ? `${m[1]} to ${m[3]} ${m[4]}` : `${m[1]} ${m[2]} to ${m[3]} ${m[4]}`;

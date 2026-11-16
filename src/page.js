@@ -1989,7 +1989,11 @@
     const GRID = 'body:has([data-tabid="surfaceHeader_timeStripHeader"])';
     if (S.tileTimes) {
       // Only tiles whose time was read (data-olkt-time): all-day and unusual tiles keep every line.
-      out.push(`${GRID} ${CALTILE}:has(> div > [data-olkt-time]) > div > div:nth-child(n+2):not(:has(i)){display:none!important}`);
+      // Keyed off the title rather than a position: nth-child(n+2) hid whatever sat after the
+      // first child, so a row Outlook added ahead of the title took the title's place and the
+      // title itself was the thing that went. Hiding the title's following siblings instead
+      // leaves anything Outlook puts before it alone and can never hide the title.
+      out.push(`${GRID} ${CALTILE}:has(> div > [data-olkt-time]) > div > [data-olkt-time] ~ div:not(:has(i)){display:none!important}`);
       out.push(`${GRID} [data-olkt-time]::after{content:attr(data-olkt-time);display:block;font-weight:400;font-size:11.5px;opacity:.8}`);
     }
     // Overlaps (ensureOverlap): two events cascade, the later one 18px in and on top;
@@ -2804,10 +2808,25 @@
     }
     // Tiles: the time from the tile's own label, under the title.
     for (const tile of S.tileTimes ? document.querySelectorAll(CALTILE) : []) {
-      const m = /(\d{1,2}:\d{2}) ([AP]M) to (\d{1,2}:\d{2}) ([AP]M)/.exec(tile.getAttribute('aria-label') || '');
-      const title = tile.firstElementChild && tile.firstElementChild.firstElementChild;
+      const label = tile.getAttribute('aria-label') || '';
+      const m = /(\d{1,2}:\d{2}) ([AP]M) to (\d{1,2}:\d{2}) ([AP]M)/.exec(label);
+      const inner = tile.firstElementChild;
+      if (!inner) continue;
+      const kids = [...inner.children];
+      // The title is not always the first child. Outlook gives a tile rows of its own and the
+      // set changes with the event's state, so taking the first child lands on one of those
+      // instead: the time then hangs off Outlook's node and the stylesheet, which hides
+      // everything after the title, hides the real title. Match the name in the label rather
+      // than a position. ("Gym icon, Gym Session, 12:00 PM to ..." carries an icon word first.)
+      const name = (/^(?:[\w ]+ icon, )?(.*?), \d{1,2}:\d{2} [AP]M to /.exec(label) || [])[1];
+      const head = (name && name.trim().slice(0, 18)) || '';
+      const title = (head && kids.find(k => (k.textContent || '').trim().startsWith(head)))
+        || kids.find(k => !k.querySelector('i') && (k.textContent || '').trim())
+        || kids[0];
       if (!title) continue;
-      if (!m) { title.removeAttribute('data-olkt-time'); continue; } // Outlook reuses tile nodes
+      // Outlook reuses tile nodes, so a stale marker on any other child is cleared too.
+      for (const k of kids) if (k !== title && k.hasAttribute('data-olkt-time')) k.removeAttribute('data-olkt-time');
+      if (!m) { title.removeAttribute('data-olkt-time'); continue; }
       const when = m[2] === m[4] ? `${m[1]} to ${m[3]} ${m[4]}` : `${m[1]} ${m[2]} to ${m[3]} ${m[4]}`;
       if (title.getAttribute('data-olkt-time') !== when) title.setAttribute('data-olkt-time', when);
     }

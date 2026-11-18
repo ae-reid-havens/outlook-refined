@@ -526,8 +526,10 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     }
     for (const [acct, name] of Object.entries(cfg.accounts || {})) {
       if (!name) continue;
-      const r = `${PANE} [role="treeitem"][aria-level="1"][data-folder-name=${q(acct)}] > span:first-of-type`;
-      out.push(`${r}{font-size:0!important}`, `${r}::after{content:${JSON.stringify(name)};font-size:${size}}`);
+      for (const r of [`${PANE} [role="treeitem"][aria-level="1"][data-folder-name=${q(acct)}] > span:first-of-type`,
+                       `${PANE} [role="treeitem"][data-olkt-acct=${q(acct)}] > span:first-of-type`]) {
+        out.push(`${r}{font-size:0!important}`, `${r}::after{content:${JSON.stringify(name)};font-size:${size}}`);
+      }
     }
     if (cfg.accountsHeading && folds[ACCOUNTS]) {
       out.push(`${PANE} div:has(> [role="treeitem"][aria-level="1"]:not([data-folder-name="favorites"])){display:none!important}`);
@@ -858,6 +860,30 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     const found = key && (key.group ? findGroup(key.group) : findFolder(key.folder));
     // The names before the release: only a favorite that appears after it was dropped.
     lastDrop = found ? { ...key, at: Date.now(), before: new Set(favoriteNames()) } : null;
+  }
+
+  // A shared mailbox's root is not a primaryMailboxRoot and can name itself with its address in
+  // any letter case, so tag any account-tree node whose name, label text or mailbox (read from its
+  // React fiber) is a labelled account; the label rule above then matches data-olkt-acct.
+  function tagSharedRoots() {
+    const keys = Object.keys(cfg.accounts || {}).filter(a => cfg.accounts[a]);
+    if (!keys.length) return;
+    for (const el of document.querySelectorAll(`${PANE} [role="treeitem"]`)) {
+      if (el.closest(FAVS)) continue;
+      const span = el.querySelector(':scope > span');
+      let acct = lower(el.getAttribute('data-folder-name'));
+      if (!keys.includes(acct)) acct = lower(span && span.textContent);
+      if (!keys.includes(acct) && el.getAttribute('aria-level') === '1') {
+        try {
+          const k = Object.keys(el).find(x => x.startsWith('__reactFiber$'));
+          for (let f = k && el[k], i = 0; f && i < 4; f = f.return, i++) {
+            const box = f.memoizedProps && f.memoizedProps.mailboxInfo;
+            if (box && typeof box.mailboxSmtpAddress === 'string') { acct = lower(box.mailboxSmtpAddress); break; }
+          }
+        } catch {}
+      }
+      if (keys.includes(acct)) setAttr(el, 'data-olkt-acct', acct);
+    }
   }
 
   // Header above the first account tree. Inserted next to Outlook's nodes, never moving them.
@@ -3065,6 +3091,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     if (names !== lastNames) { lastNames = names; render(); return; }
     ensureHeaders(list);
     ensureAccountsHeader();
+    tagSharedRoots();
     ensureAccountDrag();
     ensureResize();
     if (agenda && (!agendaEl || !agendaEl.isConnected)) renderAgenda();

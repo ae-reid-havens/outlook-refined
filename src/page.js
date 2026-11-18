@@ -172,8 +172,8 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   // The settings as the mod sends them in each state answer, without the per-load key.
   const configText = ({ key, ...rest }) => JSON.stringify(rest);
   const CONFIG_TEXT = configText(S);
-  const COLOURS_KEY = 'olkt-folder-colours';
-  const STORE_KEYS = [COLOURS_KEY, FOLD_KEY, WIDTH_KEY, FAVORITES_KEY, ACCOUNT_ORDER_KEY, 'olkt-agenda-height', 'olkt-other-height', 'olkt-other-split', 'olkt-other-folds'];
+  const COLORS_KEY = 'olkt-folder-colors';
+  const STORE_KEYS = [COLORS_KEY, FOLD_KEY, WIDTH_KEY, FAVORITES_KEY, ACCOUNT_ORDER_KEY, 'olkt-agenda-height', 'olkt-other-height', 'olkt-other-split', 'olkt-other-folds'];
   const store = (() => {
     const mem = new Map();
     // A copy started by a settings change takes over the state the copy before it had
@@ -1970,7 +1970,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       targets.push({ label: g.label, indent: depth + 1, disabled: at && at.parent === g, run: () => { const cur = findGroup(g.id); if (cur) moveTo(self(), cur); } });
     }
     showMenu(x, y, [
-      { label: 'Colour...', run: () => colourMenu(item, x, y) },
+      { label: 'Color...', run: () => colorMenu(item, x, y) },
       '-',
       { label: 'Rename (short label)', run: () => rename(item, node.label || original, v => { self().label = v && v !== original ? v : undefined; save(); }) },
       { label: 'Use original name', disabled: !node.label, run: () => { delete self().label; save(); } },
@@ -1990,42 +1990,78 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     const folder = item && item.getAttribute('data-folder-name');
     let node = folder && findFolder(folder);
     if (!node && folder && cfg.favorites.length && !matchesAnyGroup(folder) && placeUnplaced()) node = findFolder(folder);
-    if (!node) { onColourContextMenu(ev); return; }
+    if (!node) { onColorContextMenu(ev); return; }
     ev.preventDefault();
     ev.stopPropagation();
     folderMenu(node, item, ev.clientX, ev.clientY);
   }
 
-  // ==== folder colours ====
-  // Outlook colours a folder icon through the custom property --customColor on the
+  // ==== folder colors ====
+  // Outlook colors a folder icon through the custom property --customColor on the
   // element around the icon, and offers no way to set it on a shared mailbox's folders.
-  // Here any folder row, shared or not, takes one of the colours Outlook itself uses
-  // (Shift+right-click, Colour...). Choices are saved per account and folder name and
-  // put back after every redraw; "No colour" gives back whatever Outlook drew.
-  const FOLDER_COLOURS = [
-    ['Green', '#4DA64D'], ['Teal', '#41A3A3'], ['Cyan', '#58D3DB'], ['Light blue', '#83BDEB'],
-    ['Blue', '#4178A3'], ['Purple', '#A79CF1'], ['Red', '#DC626D'], ['Yellow', '#F2C661'], ['Grey', '#B3BFC2'],
+  // Here any folder row, shared or not, takes one of the 15 colors Outlook's own picker
+  // offers, in its order, with its dark and light theme values (read from Outlook's
+  // FolderColorPicker). Shift+right-click, Color... A choice is saved as the color's name
+  // per account and folder, so it follows the theme; it is put back after every redraw.
+  // "Automatic" gives back whatever Outlook drew.
+  // name, label, dark theme, light theme
+  const FOLDER_COLORS = [
+    ['cranberry', 'Red', '#DC626D', '#C50F1F'], ['peach', 'Orange', '#FFBA66', '#FF8C00'],
+    ['gold', 'Yellow', '#F2C661', '#EAA300'], ['bronze', 'Copper', '#CA8057', '#A74109'],
+    ['lime', 'Light green', '#A4CC6C', '#73AA24'],
+    ['dark_green', 'Green', '#4DA64D', '#0B6A0B'], ['light_teal', 'Aqua', '#58D3DB', '#00B7C3'],
+    ['dark_teal', 'Teal', '#41A3A3', '#006666'], ['light_blue', 'Light blue', '#83BDEB', '#3A96DD'],
+    ['dark_blue', 'Steel blue', '#4178A3', '#003966'],
+    ['lavender', 'Lavender', '#A79CF1', '#7160E8'], ['dark_purple', 'Purple', '#7E5CA7', '#401B6C'],
+    ['pink', 'Pink', '#EF85C8', '#E43BA6'], ['magenta', 'Magenta', '#D957A8', '#BF0077'],
+    ['silver', 'Silver', '#B3BFC2', '#859599'],
   ];
-  let folderColours = {};
-  function loadColours() {
-    try { const v = JSON.parse(store.getItem(COLOURS_KEY) || '{}'); folderColours = v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { folderColours = {}; }
+  const COLORS_OLD_KEY = 'olkt-folder-colours';
+  let folderColors = {};
+  function isDarkTheme() {
+    const h = document.documentElement;
+    if (h.classList.contains('dark')) return true;
+    if (h.classList.contains('light')) return false;
+    const m = /^#([0-9a-f]{6})$/i.exec(getComputedStyle(h).getPropertyValue('--colorNeutralBackground1').trim());
+    if (m) { const n = parseInt(m[1], 16); return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 < 128; }
+    return matchMedia('(prefers-color-scheme: dark)').matches;
   }
-  loadColours();
-  const colourIcon = row => row.querySelector(':scope > div > div > i');
-  function colourKey(row) {
+  function loadColors() {
+    try { const v = JSON.parse(store.getItem(COLORS_KEY) || '{}'); folderColors = v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { folderColors = {}; }
+    // Choices saved under the earlier British-spelled key held a fixed color; they become
+    // the color of that value, in either theme.
+    let old = null;
+    try { old = JSON.parse(store.getItem(COLORS_OLD_KEY) || 'null'); } catch {}
+    if (old && typeof old === 'object') {
+      let changed = false;
+      for (const [k, hex] of Object.entries(old)) {
+        const c = FOLDER_COLORS.find(c => c[2].toLowerCase() === String(hex).toLowerCase() || c[3].toLowerCase() === String(hex).toLowerCase());
+        if (c && !(k in folderColors)) { folderColors[k] = c[0]; changed = true; }
+      }
+      try {
+        if (changed) store.setItem(COLORS_KEY, JSON.stringify(folderColors));
+        store.removeItem(COLORS_OLD_KEY);
+      } catch {}
+    }
+  }
+  loadColors();
+  const colorIcon = row => row.querySelector(':scope > div > div > i');
+  function colorKey(row) {
     const name = row.getAttribute('data-folder-name') || '';
     return accountOf(name, row) + '|' + name.replace(/ \([^()]+@[^()]+\)$/, '');
   }
-  function ensureFolderColours() {
+  function ensureFolderColors() {
+    const dark = isDarkTheme();
     for (const row of document.querySelectorAll('[role="treeitem"][data-folder-name]')) {
-      const icon = colourIcon(row);
+      const icon = colorIcon(row);
       const box = icon && icon.parentElement;
       if (!box) continue;
-      const want = folderColours[colourKey(row)];
+      const entry = FOLDER_COLORS.find(c => c[0] === folderColors[colorKey(row)]);
+      const want = entry ? entry[dark ? 2 : 3] : '';
       const have = box.style.getPropertyValue('--customColor').trim();
       if (want) {
         if (!box.hasAttribute('data-olkt-nat')) box.setAttribute('data-olkt-nat', have);
-        if (have !== want) box.style.setProperty('--customColor', want);
+        if (have.toLowerCase() !== want.toLowerCase()) box.style.setProperty('--customColor', want);
       } else if (box.hasAttribute('data-olkt-nat')) {
         const nat = box.getAttribute('data-olkt-nat');
         box.removeAttribute('data-olkt-nat');
@@ -2033,31 +2069,32 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       }
     }
   }
-  function setFolderColour(row, hex) {
-    const key = colourKey(row);
-    if (hex) folderColours[key] = hex; else delete folderColours[key];
-    try { store.setItem(COLOURS_KEY, JSON.stringify(folderColours)); } catch {}
-    ensureFolderColours();
+  function setFolderColor(row, name) {
+    const key = colorKey(row);
+    if (name) folderColors[key] = name; else delete folderColors[key];
+    try { store.setItem(COLORS_KEY, JSON.stringify(folderColors)); } catch {}
+    ensureFolderColors();
   }
-  function colourMenu(row, x, y) {
-    const cur = folderColours[colourKey(row)];
+  function colorMenu(row, x, y) {
+    const cur = folderColors[colorKey(row)];
+    const dark = isDarkTheme();
     showMenu(x, y, [
-      { heading: 'COLOUR' },
-      ...FOLDER_COLOURS.map(([label, hex]) => ({ label: label + (cur === hex ? ' (current)' : ''), swatch: hex, run: () => setFolderColour(row, hex) })),
+      { heading: 'COLOR' },
+      { label: 'Automatic', swatch: '', disabled: !cur, run: () => setFolderColor(row, null) },
       '-',
-      { label: 'No colour', swatch: '', disabled: !cur, run: () => setFolderColour(row, null) },
+      ...FOLDER_COLORS.map(c => ({ label: c[1] + (cur === c[0] ? ' (current)' : ''), swatch: c[dark ? 2 : 3], run: () => setFolderColor(row, c[0]) })),
     ]);
   }
-  function onColourContextMenu(ev) {
+  function onColorContextMenu(ev) {
     if (!ev.shiftKey) return;
     const row = ev.target.closest('[role="treeitem"][data-folder-name]');
-    if (!row || !colourIcon(row)) return;
+    if (!row || !colorIcon(row)) return;
     if (boundList && boundList.contains(row) && ev.currentTarget !== boundList) return;  // the list's own handler takes it
     ev.preventDefault();
     ev.stopPropagation();
-    colourMenu(row, ev.clientX, ev.clientY);
+    colorMenu(row, ev.clientX, ev.clientY);
   }
-  let colourBound = false;
+  let colorBound = false;
 
   // Favorites that are in no group yet (all of them, on a new install) show at the
   // top in Outlook's order. The first time one is edited, all of them join the tree
@@ -3131,8 +3168,8 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     ensureReading();
     ensureAgendaData();
     ensureOther();
-    if (!colourBound) { colourBound = true; document.addEventListener('contextmenu', onColourContextMenu, true); }
-    ensureFolderColours();
+    if (!colorBound) { colorBound = true; document.addEventListener('contextmenu', onColorContextMenu, true); }
+    ensureFolderColors();
     // The agenda hides with a collapsed navigation pane; the tree is fitted again when
     // it comes back, not a minute later.
     const shown = !!(agendaEl && agendaEl.isConnected && agendaEl.offsetParent);
@@ -3279,7 +3316,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   function applyState() {
     if (S.favoritesGroups) cfg.favorites = stored(FAVORITES_KEY, DEFAULT_FAVORITES);
     cfg.accounts = orderedAccounts(stored(ACCOUNT_ORDER_KEY, []));
-    loadColours();
+    loadColors();
     // A value an older version left behind is deleted only once the mod has it: a
     // write it refuses, for being too large, must not take the last copy with it.
     for (const key of STORE_KEYS) {

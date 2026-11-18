@@ -393,7 +393,8 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   // The settings as the mod sends them in each state answer, without the per-load key.
   const configText = ({ key, ...rest }) => JSON.stringify(rest);
   const CONFIG_TEXT = configText(S);
-  const STORE_KEYS = [FOLD_KEY, WIDTH_KEY, FAVORITES_KEY, ACCOUNT_ORDER_KEY, 'olkt-agenda-height', 'olkt-other-height', 'olkt-other-split', 'olkt-other-folds'];
+  const COLOURS_KEY = 'olkt-folder-colours';
+  const STORE_KEYS = [COLOURS_KEY, FOLD_KEY, WIDTH_KEY, FAVORITES_KEY, ACCOUNT_ORDER_KEY, 'olkt-agenda-height', 'olkt-other-height', 'olkt-other-split', 'olkt-other-folds'];
   const store = (() => {
     const mem = new Map();
     // A copy started by a settings change takes over the state the copy before it had
@@ -2067,6 +2068,11 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       b.textContent = e.label;
       if (e.indent) b.style.paddingLeft = (12 + e.indent * 12) + 'px';
       if (e.disabled) b.disabled = true;
+      if (e.swatch !== undefined) {
+        const sw = document.createElement('span');
+        sw.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:8px;vertical-align:-1px;' + (e.swatch ? 'background:' + e.swatch : 'border:1px solid currentColor;opacity:.6');
+        b.prepend(sw);
+      }
       b.addEventListener('click', ev => { ev.stopPropagation(); closeMenus(); e.run(); });
       menu.appendChild(b);
     }
@@ -2185,6 +2191,8 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       targets.push({ label: g.label, indent: depth + 1, disabled: at && at.parent === g, run: () => { const cur = findGroup(g.id); if (cur) moveTo(self(), cur); } });
     }
     showMenu(x, y, [
+      { label: 'Colour...', run: () => colourMenu(item, x, y) },
+      '-',
       { label: 'Rename (short label)', run: () => rename(item, node.label || original, v => { self().label = v && v !== original ? v : undefined; save(); }) },
       { label: 'Use original name', disabled: !node.label, run: () => { delete self().label; save(); } },
       { label: 'New group below', run: () => addGroupAfter(self()) },
@@ -2203,11 +2211,74 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     const folder = item && item.getAttribute('data-folder-name');
     let node = folder && findFolder(folder);
     if (!node && folder && cfg.favorites.length && !matchesAnyGroup(folder) && placeUnplaced()) node = findFolder(folder);
-    if (!node) return;
+    if (!node) { onColourContextMenu(ev); return; }
     ev.preventDefault();
     ev.stopPropagation();
     folderMenu(node, item, ev.clientX, ev.clientY);
   }
+
+  // ==== folder colours ====
+  // Outlook colours a folder icon through the custom property --customColor on the
+  // element around the icon, and offers no way to set it on a shared mailbox's folders.
+  // Here any folder row, shared or not, takes one of the colours Outlook itself uses
+  // (Shift+right-click, Colour...). Choices are saved per account and folder name and
+  // put back after every redraw; "No colour" gives back whatever Outlook drew.
+  const FOLDER_COLOURS = [
+    ['Green', '#4DA64D'], ['Teal', '#41A3A3'], ['Cyan', '#58D3DB'], ['Light blue', '#83BDEB'],
+    ['Blue', '#4178A3'], ['Purple', '#A79CF1'], ['Red', '#DC626D'], ['Yellow', '#F2C661'], ['Grey', '#B3BFC2'],
+  ];
+  let folderColours = {};
+  function loadColours() {
+    try { const v = JSON.parse(store.getItem(COLOURS_KEY) || '{}'); folderColours = v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { folderColours = {}; }
+  }
+  loadColours();
+  const colourIcon = row => row.querySelector(':scope > div > div > i');
+  function colourKey(row) {
+    const name = row.getAttribute('data-folder-name') || '';
+    return accountOf(name, row) + '|' + name.replace(/ \([^()]+@[^()]+\)$/, '');
+  }
+  function ensureFolderColours() {
+    for (const row of document.querySelectorAll('[role="treeitem"][data-folder-name]')) {
+      const icon = colourIcon(row);
+      const box = icon && icon.parentElement;
+      if (!box) continue;
+      const want = folderColours[colourKey(row)];
+      const have = box.style.getPropertyValue('--customColor').trim();
+      if (want) {
+        if (!box.hasAttribute('data-olkt-nat')) box.setAttribute('data-olkt-nat', have);
+        if (have !== want) box.style.setProperty('--customColor', want);
+      } else if (box.hasAttribute('data-olkt-nat')) {
+        const nat = box.getAttribute('data-olkt-nat');
+        box.removeAttribute('data-olkt-nat');
+        if (nat) box.style.setProperty('--customColor', nat); else box.style.removeProperty('--customColor');
+      }
+    }
+  }
+  function setFolderColour(row, hex) {
+    const key = colourKey(row);
+    if (hex) folderColours[key] = hex; else delete folderColours[key];
+    try { store.setItem(COLOURS_KEY, JSON.stringify(folderColours)); } catch {}
+    ensureFolderColours();
+  }
+  function colourMenu(row, x, y) {
+    const cur = folderColours[colourKey(row)];
+    showMenu(x, y, [
+      { heading: 'COLOUR' },
+      ...FOLDER_COLOURS.map(([label, hex]) => ({ label: label + (cur === hex ? ' (current)' : ''), swatch: hex, run: () => setFolderColour(row, hex) })),
+      '-',
+      { label: 'No colour', swatch: '', disabled: !cur, run: () => setFolderColour(row, null) },
+    ]);
+  }
+  function onColourContextMenu(ev) {
+    if (!ev.shiftKey) return;
+    const row = ev.target.closest('[role="treeitem"][data-folder-name]');
+    if (!row || !colourIcon(row)) return;
+    if (boundList && boundList.contains(row) && ev.currentTarget !== boundList) return;  // the list's own handler takes it
+    ev.preventDefault();
+    ev.stopPropagation();
+    colourMenu(row, ev.clientX, ev.clientY);
+  }
+  let colourBound = false;
 
   // Favorites that are in no group yet (all of them, on a new install) show at the
   // top in Outlook's order. The first time one is edited, all of them join the tree
@@ -3281,6 +3352,8 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     ensureReading();
     ensureAgendaData();
     ensureOther();
+    if (!colourBound) { colourBound = true; document.addEventListener('contextmenu', onColourContextMenu, true); }
+    ensureFolderColours();
     // The agenda hides with a collapsed navigation pane; the tree is fitted again when
     // it comes back, not a minute later.
     const shown = !!(agendaEl && agendaEl.isConnected && agendaEl.offsetParent);
@@ -3427,6 +3500,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   function applyState() {
     if (S.favoritesGroups) cfg.favorites = stored(FAVORITES_KEY, DEFAULT_FAVORITES);
     cfg.accounts = orderedAccounts(stored(ACCOUNT_ORDER_KEY, []));
+    loadColours();
     // A value an older version left behind is deleted only once the mod has it: a
     // write it refuses, for being too large, must not take the last copy with it.
     for (const key of STORE_KEYS) {

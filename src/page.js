@@ -24,7 +24,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   const SESSION_V = 5;
   const session = (window.__olktSession && window.__olktSession.v === SESSION_V) ? window.__olktSession : (window.__olktSession = (() => {
     const byAnchor = new Map(); // x-anchormailbox -> { base, headers, at }
-    const byCategory = new Map(); // x-anchormailbox (or '*') -> Map(category name -> colour index)
+    const byCategory = new Map(); // x-anchormailbox (or '*') -> Map(category name -> color index)
     const asked = new Set(); // mailboxes whose palette has been asked for, so it is asked once
     const KEEP = ['authorization', 'x-owa-sessionid', 'x-client-version', 'x-tenantid', 'prefer', 'x-owa-hosted-ux', 'x-req-source'];
     const listeners = new Set();
@@ -57,7 +57,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       if (fresh) for (const fn of listeners) { try { fn(anchor); } catch {} }
     };
     // Each category in the startup payload is written as {"Name":"...","Color":n,"Id":"..."},
-    // where the colour is an index into Outlook's fixed palette. Pulled out with a search
+    // where the color is an index into Outlook's fixed palette. Pulled out with a search
     // rather than by parsing the whole payload, which is large and none of our business.
     const CATEGORY = /\{"Name":"((?:[^"\\]|\\.)*)","Color":(-?\d+),"Id":"/g;
     const readPalette = (anchor, text) => {
@@ -70,7 +70,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
         if (name && color >= 0) map.set(name, color);
       }
       // Only for the mailbox it came from: two accounts can give the same category name
-      // different colours, and a palette with no mailbox on it belongs to none of them.
+      // different colors, and a palette with no mailbox on it belongs to none of them.
       if (map.size && anchor) byCategory.set(anchor, map);
     };
     const isStartup = url => { try { return /\/owa\/startupdata\.ashx/i.test(new URL(url, location.href).pathname); } catch { return false; } };
@@ -610,7 +610,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     // width would otherwise come back for nobody but the few who turn the agenda on.
     out.push(`${PANE} div:has(> [role="tree"]){scrollbar-gutter:auto!important}`);
     // A scrollbar like Outlook's own: thin, no arrows, a rounded thumb in the theme's stroke
-    // colour, shown while the pointer is over the tree. (scrollbar-width or scrollbar-color
+    // color, shown while the pointer is over the tree. (scrollbar-width or scrollbar-color
     // would switch these ::-webkit-scrollbar rules off, so neither is set.)
     out.push(`.olkt-tree::-webkit-scrollbar{width:8px}`);
     out.push(`.olkt-tree::-webkit-scrollbar-button{display:none;height:0}`);
@@ -1214,7 +1214,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     return undefined;
   }
   const joinIn = (...texts) => { for (const t of texts) { const j = meetingLink(t); if (j) return j; } return undefined; };
-  // Outlook's 25 category colours, in the order its colour index uses.
+  // Outlook's 25 category colors, in the order its color index uses.
   const CATEGORY_COLORS = ('#d13438 #ca5010 #8e562e #c19c00 #498205 #038387 #5c7e10 #0078d4 #8764b8 #c30052 ' +
     '#69797e #394146 #7a7574 #525252 #000000 #750b1c #8e3b05 #4d291c #817400 #0b6a0b ' +
     '#005b70 #3a4d00 #004e8c #5c2e91 #77004d').split(' ');
@@ -1261,7 +1261,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   const instant = s => new Date(s).toISOString();
   // One account's events between from and to (occurrences expanded), as the agenda draws them.
   async function readAccount(acct, from, to, joinsUntil) {
-    // Outlook colours an event by its calendar; a failure here only costs the colours.
+    // Outlook colors an event by its calendar; a failure here only costs the colors.
     const colors = await calendarColors(acct).catch(() => null);
     const found = await owa(acct, 'FindItem', { ItemShape: { __type: 'ItemResponseShape:#Exchange', BaseShape: 'Default', AdditionalProperties: CAL_PROPS }, ParentFolderIds: [{ __type: 'DistinguishedFolderId:#Exchange', Id: 'calendar' }], Traversal: 'Shallow', Paging: { __type: 'CalendarPageView:#Exchange', StartDate: from.toISOString(), EndDate: to.toISOString() } });
     const msg = found.ResponseMessages && found.ResponseMessages.Items && found.ResponseMessages.Items[0];
@@ -1292,7 +1292,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       events.push(e);
     }
     if (!session.palette(acct.anchor) && events.some(e => e.categories && e.categories.length)) {
-      // The next read paints them; this one keeps the calendar colours it already has.
+      // The next read paints them; this one keeps the calendar colors it already has.
       session.palettes(acct.anchor).then(n => { if (n && current()) ensureAgendaData(true); }, () => {});
     }
     if (bodies.length) {
@@ -2016,7 +2016,6 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     ['pink', 'Pink', '#EF85C8', '#E43BA6'], ['magenta', 'Magenta', '#D957A8', '#BF0077'],
     ['silver', 'Silver', '#B3BFC2', '#859599'],
   ];
-  const COLORS_OLD_KEY = 'olkt-folder-colours';
   let folderColors = {};
   function isDarkTheme() {
     const h = document.documentElement;
@@ -2028,21 +2027,6 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   }
   function loadColors() {
     try { const v = JSON.parse(store.getItem(COLORS_KEY) || '{}'); folderColors = v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { folderColors = {}; }
-    // Choices saved under the earlier British-spelled key held a fixed color; they become
-    // the color of that value, in either theme.
-    let old = null;
-    try { old = JSON.parse(store.getItem(COLORS_OLD_KEY) || 'null'); } catch {}
-    if (old && typeof old === 'object') {
-      let changed = false;
-      for (const [k, hex] of Object.entries(old)) {
-        const c = FOLDER_COLORS.find(c => c[2].toLowerCase() === String(hex).toLowerCase() || c[3].toLowerCase() === String(hex).toLowerCase());
-        if (c && !(k in folderColors)) { folderColors[k] = c[0]; changed = true; }
-      }
-      try {
-        if (changed) store.setItem(COLORS_KEY, JSON.stringify(folderColors));
-        store.removeItem(COLORS_OLD_KEY);
-      } catch {}
-    }
   }
   loadColors();
   const colorIcon = row => row.querySelector(':scope > div > div > i');
@@ -2749,7 +2733,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     out.push(`.olkt-agenda,.olkt-other,.olkt-other-toggle,.olkt-compose,.olkt-head,.olkt-resize{display:none!important}`);
     // Paper is white. Under a dark theme Outlook rewrites the message with inline
     // `color: ... !important`, which no stylesheet can outrank, so the text is painted black
-    // through its fill colour, which those inline rules do not set.
+    // through its fill color, which those inline rules do not set.
     out.push(`${READING}{background:#fff!important}`);
     out.push(`${READING} *{background-color:transparent!important;box-shadow:none!important}`);
     out.push(`${READING},${READING} *{color:#000!important;-webkit-text-fill-color:#000!important}`);

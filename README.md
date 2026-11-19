@@ -20,8 +20,15 @@ rename it or move it into a group. Pattern groups fill themselves from Favorites
 each account's Drafts, Sent and Outbox, and the Junk group each Junk Email folder, once that folder is a
 favorite (right-click it in its account tree and choose Add to Favorites). Each account can get a
 compose button that starts a new message from that account, and a short label that replaces the
-address Outlook appends to folder names. The pane can be dragged wider, the account trees fold
+address Outlook appends to folder names; a shared mailbox takes a label the same way, by its
+address. Any folder can take a color, shared mailboxes' folders too, which Outlook itself does
+not offer: Shift+right-click the folder, choose Color... and pick from Outlook's own 15 folder
+colors, each drawn in its light or dark shade to match the theme (Automatic gives back
+Outlook's). The pane can be dragged wider, the account trees fold
 under one heading, and accounts reorder by dragging.
+
+<p><img src="docs/folder-colors-dark.png" width="380" alt="The Color menu on a folder in the dark theme, with Outlook's 15 folder colors">
+<img src="docs/folder-colors-light.png" width="380" alt="The same menu in the light theme, each color in its light shade"></p>
 
 **Agenda.** Today and the next few days from every account's calendar sit at the bottom of the
 folder pane, each event in its calendar's color, with Outlook's own event icons, a marker on
@@ -57,7 +64,7 @@ pictures and tables are never split across two pages, and anything too wide for 
 scaled to fit.
 
 ![The same message printed: panes and buttons gone, black on white, the thread history
-greyed](docs/print.png)
+grayed](docs/print.png)
 
 ## Requirements
 
@@ -94,7 +101,7 @@ folder holding the installer, the mod, your settings and a note with the one com
 | Favorites groups | on | Groups that fold, starting with Outgoing and Junk |
 | Hidden favorites | empty | Favorite folder names to leave out |
 | Compose buttons | empty | One button per account; a new message starts from that account |
-| Account labels | empty | Short names that replace the address in folder names |
+| Account labels | empty | Short names that replace the address in folder names; shared mailboxes too |
 | Primary account address | empty | Leave empty to detect it |
 | Accounts heading | Accounts | Heading that folds every account tree |
 | Hide account trees | off | Favorites only |
@@ -122,10 +129,11 @@ folder holding the installer, the mod, your settings and a note with the one com
 
 ## Editing inside Outlook
 
-Groups, renames, folds, account order, pane width and the Other card's on/off state are edited
-in Outlook itself, not in the settings. They are saved in Windhawk's own storage for this mod,
-under the names `olkt-favorites`, `olkt-account-order`, `olkt-folds`, `olkt-pane-width`,
-`olkt-agenda-height`, `olkt-other-height`, `olkt-other-split` and `olkt-other-folds`, so removing
+Groups, renames, folds, account order, folder colors, pane width and the Other card's on/off
+state are edited in Outlook itself, not in the settings. They are saved in Windhawk's own storage
+for this mod, under the names `olkt-favorites`, `olkt-account-order`, `olkt-folds`,
+`olkt-folder-colors`, `olkt-pane-width`, `olkt-agenda-height`, `olkt-other-height`,
+`olkt-other-split` and `olkt-other-folds`, so removing
 the mod removes them too. Anything an earlier version left in Outlook's local storage is moved
 across the first time this version runs. Drag a favorite onto another favorite to put it just
 above or below that one, or onto a group header: its upper half puts it above the group, its

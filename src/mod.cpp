@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              outlook-refined
 // @name            Outlook Refined
-// @description     Restyles new Outlook: favorites groups, per-account compose buttons, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane, and a print layout
-// @version         0.6.5
+// @description     Restyles new Outlook: favorites groups, per-account compose buttons, folder colors, a resizable folder pane, an agenda with a month grid, the Other inbox under Focused, a tidier calendar and reading pane, and a print layout
+// @version         0.7.0
 // @author          Analytic Endeavors
 // @github          https://github.com/ae-reid-havens
 // @include         olk.exe
@@ -39,16 +39,18 @@ headers Outlook sets, in memory, and reuses them. Those features refresh every
 few minutes while they are on, and each is off until you turn it on. Nothing is
 stored, logged or sent anywhere else, and no credential is written down.
 
-**Where your edits are kept.** Groups, renames, folds, account order and the
-pane and card sizes are saved in Windhawk's own storage for this mod, so they
+**Where your edits are kept.** Groups, renames, folds, account order, folder
+colors and the pane and card sizes are saved in Windhawk's own storage for this mod, so they
 leave when the mod does. State an earlier version wrote into Outlook's own local
 storage is moved across the first time this one runs. Other Outlook windows
 that are already open pick up a change as soon as you move into them.
 
 **Folder pane:** Favorites in groups that fold (right-click a group header for
 its menu, drag a favorite to move it, Shift+right-click it to rename or move
-it), per-account compose buttons, a resizable pane, account trees under one
-foldable heading, accounts reordered by dragging.
+it), per-account compose buttons, short account labels (shared mailboxes
+included), a color for any folder (Shift+right-click it, then Color..., with
+Outlook's own palette in light and dark), a resizable pane, account trees under
+one foldable heading, accounts reordered by dragging.
 
 **Agenda:** today and the next days from every account's calendar at the bottom
 of the folder pane, with a join button for online meetings, under a month grid
@@ -99,7 +101,7 @@ the parts that depend on this most.
     - label: ""
       $name: Short label
   $name: Account labels
-  $description: Short names for accounts in the folder pane, pattern groups and the calendar list
+  $description: Short names for accounts and shared mailboxes in the folder pane, pattern groups and the calendar list
 - primaryAccount: ""
   $name: Primary account address
   $description: Leave empty to detect it. Outlook names the primary account's folders without an address suffix
@@ -170,7 +172,7 @@ the parts that depend on this most.
   $name: Print, quoted replies
   $options:
   - show: Print them as they are
-  - lighten: Print them smaller and grey
+  - lighten: Print them smaller and gray
   - hide: Leave them out
 */
 // ==/WindhawkModSettings==
@@ -305,6 +307,7 @@ void AddList(std::wstring& json, PCWSTR name, std::initializer_list<PCWSTR> fiel
 constexpr PCWSTR kStoreKeys[] = {
     L"olkt-favorites", L"olkt-account-order", L"olkt-folds",        L"olkt-pane-width",
     L"olkt-agenda-height", L"olkt-other-height", L"olkt-other-split", L"olkt-other-folds",
+    L"olkt-folder-colors",
 };
 constexpr size_t kStoreMaxChars = 65536;
 

@@ -297,7 +297,7 @@ void AddList(std::wstring& json, PCWSTR name, std::initializer_list<PCWSTR> fiel
 
 // ==== the mod's own saved state ====
 
-// Edits made inside Outlook (groups, renames, folds, account order, pane and card
+// Edits made inside Outlook (groups, renames, folds, account order, folder colors, pane and card
 // sizes) are the mod's state, not Outlook's, so they live in Windhawk's storage and
 // leave with the mod. The page asks for them over the WebView's message channel, again
 // whenever its window is shown or focused or the pointer or a drag comes into it, and
@@ -309,7 +309,10 @@ constexpr PCWSTR kStoreKeys[] = {
     L"olkt-agenda-height", L"olkt-other-height", L"olkt-other-split", L"olkt-other-folds",
     L"olkt-folder-colors",
 };
-constexpr size_t kStoreMaxChars = 65536;
+constexpr size_t kStoreMaxChars = 65536;  // read buffer, so a larger value an older version saved still loads
+// The longest value written: Windhawk's portable storage (an INI file) accepts more but reads
+// back only the length modulo 32,768.
+constexpr size_t kStoreMaxWriteChars = 32767;
 
 SRWLOCK g_storeLock = SRWLOCK_INIT;
 std::map<std::wstring, std::wstring> g_store;
@@ -490,7 +493,7 @@ void StoreValue(std::wstring_view name, std::wstring_view text) {
     // Only the mod's own keys, and nothing big enough to bloat the registry.
     bool known = false;
     for (PCWSTR k : kStoreKeys) known = known || key == k;
-    if (!known || value.size() >= kStoreMaxChars) return;
+    if (!known || value.size() > kStoreMaxWriteChars) return;
     AcquireSRWLockExclusive(&g_storeLock);
     if (value.empty()) {
         g_store.erase(key);

@@ -164,7 +164,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   const FAVORITES_KEY = 'olkt-favorites';
   const ACCOUNT_ORDER_KEY = 'olkt-account-order';
   // Static choices come from the mod's settings. Edits made inside Outlook (groups,
-  // renames, folds, account order, pane and card sizes) belong to the mod rather than to
+  // renames, folds, account order, folder colors, pane and card sizes) belong to the mod rather than to
   // Outlook, so they live in Windhawk's own storage: this script asks for them over the
   // WebView's message channel and sends each change back the same way. Nothing of ours
   // is left in Outlook's profile when the mod goes.
@@ -873,10 +873,10 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   }
 
   // A shared mailbox's root is not a primaryMailboxRoot and can name itself with its address in
-  // any letter case, so tag any account-tree node whose name, label text, element id (a shared
-  // root's id is its address) or drawn mailbox is a labelled account; the label rule above then
-  // matches data-olkt-acct. The Favorites root is never an account, though the component just
-  // above it carries the primary mailbox.
+  // any letter case, so tag any account-tree node whose name, label text or element id (a shared
+  // root's id is its address) is a labelled account; the label rule above then matches
+  // data-olkt-acct. The mailbox in the React tree is not used: the component above the
+  // Favorites root (and above an archive root) carries the primary mailbox.
   function tagSharedRoots() {
     const keys = Object.keys(cfg.accounts || {}).filter(a => cfg.accounts[a]);
     if (!keys.length && !document.querySelector('[data-olkt-acct]')) return;
@@ -886,8 +886,6 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
         const span = el.querySelector(':scope > span');
         const root = el.getAttribute('aria-level') === '1';
         acct = [el.getAttribute('data-folder-name'), span && span.textContent, root ? el.id : ''].map(lower).find(a => a && keys.includes(a)) || '';
-        if (!acct && root) acct = drawnProp(el, 'mailboxInfo', 4, b => lower(b.mailboxSmtpAddress));
-        if (!keys.includes(acct)) acct = '';
       }
       if (acct) setAttr(el, 'data-olkt-acct', acct);
       else if (el.hasAttribute('data-olkt-acct')) el.removeAttribute('data-olkt-acct');
@@ -2065,7 +2063,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       }
       colorStyle.textContent = FOLDER_COLORS.map(c => `[data-olkt-color="${c[0]}"]{--customColor:${c[dark ? 2 : 3]}!important}`).join('');
     }
-    for (const row of document.querySelectorAll('[role="treeitem"][data-folder-name]')) {
+    for (const row of document.querySelectorAll(`${PANE} [role="treeitem"][data-folder-name]`)) {
       const icon = colorIcon(row);
       const box = icon && icon.parentElement;
       if (!box) continue;
@@ -2074,26 +2072,38 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       else if (box.hasAttribute('data-olkt-color')) box.removeAttribute('data-olkt-color');
     }
   }
-  function setFolderColor(row, name) {
-    const key = colorKey(row);
-    if (name) folderColors[key] = name; else delete folderColors[key];
-    try { store.setItem(COLORS_KEY, JSON.stringify(folderColors)); } catch {}
+  // The mod keeps a value only up to 32,767 characters (what Windhawk's portable storage
+  // reads back whole), so a color that would push the list past that is refused, with a note.
+  const COLORS_MAX = 32767;
+  function setFolderColor(key, name, x, y) {
+    const next = { ...folderColors };
+    if (name) next[key] = name; else delete next[key];
+    const text = JSON.stringify(next);
+    if (text.length > COLORS_MAX) {
+      showMenu(x, y, [{ heading: 'TOO MANY FOLDER COLORS' }, { label: 'Set some folders back to Automatic first', disabled: true, run: () => {} }]);
+      return;
+    }
+    folderColors = next;
+    try { store.setItem(COLORS_KEY, text); } catch {}
     ensureFolderColors();
   }
+  // The folder is looked up once, when the menu opens: Outlook may redraw or reuse the row
+  // before an entry is clicked.
   function colorMenu(row, x, y) {
-    const cur = folderColors[colorKey(row)];
+    const key = colorKey(row);
+    const cur = folderColors[key];
     const dark = isDarkTheme();
     showMenu(x, y, [
       { heading: 'COLOR' },
-      { label: 'Automatic', swatch: '', disabled: !cur, run: () => setFolderColor(row, null) },
+      { label: 'Automatic', swatch: '', disabled: !cur, run: () => setFolderColor(key, null, x, y) },
       '-',
-      ...FOLDER_COLORS.map(c => ({ label: c[1] + (cur === c[0] ? ' (current)' : ''), swatch: c[dark ? 2 : 3], run: () => setFolderColor(row, c[0]) })),
+      ...FOLDER_COLORS.map(c => ({ label: c[1] + (cur === c[0] ? ' (current)' : ''), swatch: c[dark ? 2 : 3], run: () => setFolderColor(key, c[0], x, y) })),
     ]);
   }
   function onColorContextMenu(ev) {
     if (!ev.shiftKey) return;
     const row = ev.target.closest('[role="treeitem"][data-folder-name]');
-    if (!row || !colorIcon(row)) return;
+    if (!row || !row.closest(PANE) || !colorIcon(row)) return;
     if (boundList && boundList.contains(row) && ev.currentTarget !== boundList) return;  // the list's own handler takes it
     ev.preventDefault();
     ev.stopPropagation();

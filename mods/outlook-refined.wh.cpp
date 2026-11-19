@@ -636,6 +636,12 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   // root, whose mailbox is some other account's. A node kept from an earlier render
   // can still point at the older fiber, so only the one drawn with this name counts.
   function rowAccount(el) {
+    return drawnProp(el, 'mailboxInfo', 2, b => lower(b.mailboxSmtpAddress));
+  }
+  // A prop from the row's React fiber or the `depth - 1` components above it, read through
+  // `pick`, which returns '' for a value it cannot use. Only the fiber drawn with the row's
+  // current name counts.
+  function drawnProp(el, prop, depth, pick) {
     try {
       const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
       const name = el.getAttribute('data-folder-name');
@@ -643,9 +649,10 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       let f = key && el[key];
       if (!drawn(f)) f = f && f.alternate;
       if (!drawn(f)) return '';
-      for (let i = 0; f && i < 2; f = f.return, i++) {
-        const box = f.memoizedProps && f.memoizedProps.mailboxInfo;
-        if (box && typeof box.mailboxSmtpAddress === 'string') return lower(box.mailboxSmtpAddress);
+      for (let i = 0; f && i < depth; f = f.return, i++) {
+        const v = f.memoizedProps && f.memoizedProps[prop];
+        const got = v ? pick(v) : '';
+        if (got) return got;
       }
     } catch {}
     return '';
@@ -1087,26 +1094,24 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   }
 
   // A shared mailbox's root is not a primaryMailboxRoot and can name itself with its address in
-  // any letter case, so tag any account-tree node whose name, label text or mailbox (read from its
-  // React fiber) is a labelled account; the label rule above then matches data-olkt-acct.
+  // any letter case, so tag any account-tree node whose name, label text, element id (a shared
+  // root's id is its address) or drawn mailbox is a labelled account; the label rule above then
+  // matches data-olkt-acct. The Favorites root is never an account, though the component just
+  // above it carries the primary mailbox.
   function tagSharedRoots() {
     const keys = Object.keys(cfg.accounts || {}).filter(a => cfg.accounts[a]);
-    if (!keys.length) return;
+    if (!keys.length && !document.querySelector('[data-olkt-acct]')) return;
     for (const el of document.querySelectorAll(`${PANE} [role="treeitem"]`)) {
-      if (el.closest(FAVS)) continue;
-      const span = el.querySelector(':scope > span');
-      let acct = lower(el.getAttribute('data-folder-name'));
-      if (!keys.includes(acct)) acct = lower(span && span.textContent);
-      if (!keys.includes(acct) && el.getAttribute('aria-level') === '1') {
-        try {
-          const k = Object.keys(el).find(x => x.startsWith('__reactFiber$'));
-          for (let f = k && el[k], i = 0; f && i < 4; f = f.return, i++) {
-            const box = f.memoizedProps && f.memoizedProps.mailboxInfo;
-            if (box && typeof box.mailboxSmtpAddress === 'string') { acct = lower(box.mailboxSmtpAddress); break; }
-          }
-        } catch {}
+      let acct = '';
+      if (keys.length && !el.closest(FAVS) && el.id !== 'favoritesRoot' && el.getAttribute('data-folder-name') !== 'favorites') {
+        const span = el.querySelector(':scope > span');
+        const root = el.getAttribute('aria-level') === '1';
+        acct = [el.getAttribute('data-folder-name'), span && span.textContent, root ? el.id : ''].map(lower).find(a => a && keys.includes(a)) || '';
+        if (!acct && root) acct = drawnProp(el, 'mailboxInfo', 4, b => lower(b.mailboxSmtpAddress));
+        if (!keys.includes(acct)) acct = '';
       }
-      if (keys.includes(acct)) setAttr(el, 'data-olkt-acct', acct);
+      if (acct) setAttr(el, 'data-olkt-acct', acct);
+      else if (el.hasAttribute('data-olkt-acct')) el.removeAttribute('data-olkt-acct');
     }
   }
 
@@ -2240,12 +2245,14 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     ['silver', 'Silver', '#B3BFC2', '#859599'],
   ];
   let folderColors = {};
+  // Read from the theme's background token: Outlook keeps the "dark" class on the html
+  // element after a switch to the light theme, so the class is only a fallback.
   function isDarkTheme() {
     const h = document.documentElement;
-    if (h.classList.contains('dark')) return true;
-    if (h.classList.contains('light')) return false;
     const m = /^#([0-9a-f]{6})$/i.exec(getComputedStyle(h).getPropertyValue('--colorNeutralBackground1').trim());
     if (m) { const n = parseInt(m[1], 16); return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 < 128; }
+    if (h.classList.contains('dark')) return true;
+    if (h.classList.contains('light')) return false;
     return matchMedia('(prefers-color-scheme: dark)').matches;
   }
   function loadColors() {
@@ -2253,12 +2260,19 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   }
   loadColors();
   const colorIcon = row => row.querySelector(':scope > div > div > i');
+  // A folder is known by Outlook's folder id, which its Favorites row and its tree row share
+  // and which survives a rename. A row drawn without one (a mailbox root) falls back to its
+  // account and name.
   function colorKey(row) {
+    const id = drawnProp(row, 'folderId', 4, v => (typeof v === 'string' ? v : ''));
+    if (id) return 'id:' + id;
     const name = row.getAttribute('data-folder-name') || '';
     return accountOf(name, row) + '|' + name.replace(/ \([^()]+@[^()]+\)$/, '');
   }
+  let colorsDark = null;
   function ensureFolderColors() {
-    const dark = isDarkTheme();
+    const dark = colorsDark = isDarkTheme();
+    if (!Object.keys(folderColors).length && !document.querySelector('[data-olkt-nat]')) return;
     for (const row of document.querySelectorAll('[role="treeitem"][data-folder-name]')) {
       const icon = colorIcon(row);
       const box = icon && icon.parentElement;
@@ -2301,7 +2315,17 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     ev.stopPropagation();
     colorMenu(row, ev.clientX, ev.clientY);
   }
-  let colorBound = false;
+  // A theme switch changes no element the observer watches, so the colors check the theme
+  // every two seconds, and only while one is set.
+  let themeTimer = 0;
+  const onThemeTick = () => { if (Object.keys(folderColors).length && isDarkTheme() !== colorsDark) ensureFolderColors(); };
+  function restoreFolderColors() {
+    document.querySelectorAll('[data-olkt-nat]').forEach(box => {
+      const nat = box.getAttribute('data-olkt-nat');
+      box.removeAttribute('data-olkt-nat');
+      if (nat) box.style.setProperty('--customColor', nat); else box.style.removeProperty('--customColor');
+    });
+  }
 
   // Favorites that are in no group yet (all of them, on a new install) show at the
   // top in Outlook's order. The first time one is edited, all of them join the tree
@@ -3375,8 +3399,9 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     ensureReading();
     ensureAgendaData();
     ensureOther();
-    if (!colorBound) { colorBound = true; document.addEventListener('contextmenu', onColorContextMenu, true); }
     ensureFolderColors();
+    // Account trees are labelled whether or not there is a Favorites list.
+    tagSharedRoots();
     // The agenda hides with a collapsed navigation pane; the tree is fitted again when
     // it comes back, not a minute later.
     const shown = !!(agendaEl && agendaEl.isConnected && agendaEl.offsetParent);
@@ -3408,7 +3433,6 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     if (names !== lastNames) { lastNames = names; render(); return; }
     ensureHeaders(list);
     ensureAccountsHeader();
-    tagSharedRoots();
     ensureAccountDrag();
     ensureResize();
     if (agenda && (!agendaEl || !agendaEl.isConnected)) renderAgenda();
@@ -3466,6 +3490,8 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     document.addEventListener('pointerdown', onWellPress, true);
     document.addEventListener('keydown', onDocKey, true);
     document.addEventListener('keydown', onWellKey, true);
+    document.addEventListener('contextmenu', onColorContextMenu, true);
+    themeTimer = setInterval(onThemeTick, 2000);
     window.addEventListener('resize', onResize);
     window.addEventListener('beforeprint', onBeforePrint);
     window.addEventListener('afterprint', onAfterPrint);
@@ -3482,6 +3508,9 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       document.removeEventListener('pointerdown', onWellPress, true);
       document.removeEventListener('keydown', onDocKey, true);
       document.removeEventListener('keydown', onWellKey, true);
+      document.removeEventListener('contextmenu', onColorContextMenu, true);
+      clearInterval(themeTimer);
+      restoreFolderColors();
       window.removeEventListener('resize', onResize);
       clearTimeout(resizeTimer);
       window.removeEventListener('beforeprint', onBeforePrint);
@@ -3498,7 +3527,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       });
       document.querySelectorAll(OURS).forEach(n => n.remove());
       document.querySelectorAll('[data-olkt-favs]').forEach(n => n.removeAttribute('data-olkt-favs'));
-      for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked', 'data-olkt-quoted', 'data-olkt-collapsed'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));
+      for (const a of ['data-olkt-label', 'data-olkt-tz', 'data-olkt-short', 'data-olkt-off', 'data-olkt-time', 'data-olkt-chip', 'data-olkt-open', 'data-olkt-othertab', 'data-olkt-ov', 'data-olkt-sig', 'data-olkt-merges', 'data-olkt-marked', 'data-olkt-quoted', 'data-olkt-collapsed', 'data-olkt-acct'])document.querySelectorAll(`[${a}]`).forEach(n => n.removeAttribute(a));
       delete window.__olkt;
       store.stop();
       if (full) session.stop();

@@ -760,7 +760,7 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
       for (const r of [`${PANE} [role="treeitem"][aria-level="1"][data-folder-name=${q(acct)}] > span:first-of-type`,
                        `${PANE} [role="treeitem"][data-olkt-acct=${q(acct)}] > span:first-of-type`,
                        // A shared mailbox's root draws its name one wrapper deeper.
-                       `${PANE} [role="treeitem"][aria-level="1"][data-olkt-acct=${q(acct)}] > div > div > span:first-child`]) {
+                       `${PANE} [role="treeitem"][aria-level="1"]:not([id^="primaryMailboxRoot"])[data-olkt-acct=${q(acct)}] > div > div > span:first-child`]) {
         out.push(`${r}{font-size:0!important}`, `${r}::after{content:${JSON.stringify(name)};font-size:${size}}`);
       }
     }

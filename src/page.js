@@ -535,7 +535,9 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     for (const [acct, name] of Object.entries(cfg.accounts || {})) {
       if (!name) continue;
       for (const r of [`${PANE} [role="treeitem"][aria-level="1"][data-folder-name=${q(acct)}] > span:first-of-type`,
-                       `${PANE} [role="treeitem"][data-olkt-acct=${q(acct)}] > span:first-of-type`]) {
+                       `${PANE} [role="treeitem"][data-olkt-acct=${q(acct)}] > span:first-of-type`,
+                       // A shared mailbox's root draws its name one wrapper deeper.
+                       `${PANE} [role="treeitem"][aria-level="1"][data-olkt-acct=${q(acct)}] > div > div > span:first-child`]) {
         out.push(`${r}{font-size:0!important}`, `${r}::after{content:${JSON.stringify(name)};font-size:${size}}`);
       }
     }
@@ -2007,8 +2009,10 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   // Here any folder row, shared or not, takes one of the 15 colors Outlook's own picker
   // offers, in its order, with its dark and light theme values (read from Outlook's
   // FolderColorPicker). Shift+right-click, Color... A choice is saved as the color's name
-  // per account and folder, so it follows the theme; it is put back after every redraw.
-  // "Automatic" gives back whatever Outlook drew.
+  // per folder, so it follows the theme. The row's icon box gets data-olkt-color and a
+  // stylesheet rule overrides --customColor with !important, which outranks Outlook's own
+  // inline value without touching it, so "Automatic" (dropping the attribute) shows
+  // whatever Outlook draws now.
   // name, label, dark theme, light theme
   const FOLDER_COLORS = [
     ['cranberry', 'Red', '#DC626D', '#C50F1F'], ['peach', 'Orange', '#FFBA66', '#FF8C00'],
@@ -2047,24 +2051,27 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
     return accountOf(name, row) + '|' + name.replace(/ \([^()]+@[^()]+\)$/, '');
   }
   let colorsDark = null;
+  let colorStyle = null;
   function ensureFolderColors() {
-    const dark = colorsDark = isDarkTheme();
-    if (!Object.keys(folderColors).length && !document.querySelector('[data-olkt-nat]')) return;
+    const any = Object.keys(folderColors).length > 0;
+    if (!any && !document.querySelector('[data-olkt-color]')) return;
+    const dark = isDarkTheme();
+    if (!colorStyle || !colorStyle.isConnected || dark !== colorsDark) {
+      colorsDark = dark;
+      if (!colorStyle || !colorStyle.isConnected) {
+        colorStyle = document.createElement('style');
+        colorStyle.id = 'olkt-colors';
+        document.head.appendChild(colorStyle);
+      }
+      colorStyle.textContent = FOLDER_COLORS.map(c => `[data-olkt-color="${c[0]}"]{--customColor:${c[dark ? 2 : 3]}!important}`).join('');
+    }
     for (const row of document.querySelectorAll('[role="treeitem"][data-folder-name]')) {
       const icon = colorIcon(row);
       const box = icon && icon.parentElement;
       if (!box) continue;
-      const entry = FOLDER_COLORS.find(c => c[0] === folderColors[colorKey(row)]);
-      const want = entry ? entry[dark ? 2 : 3] : '';
-      const have = box.style.getPropertyValue('--customColor').trim();
-      if (want) {
-        if (!box.hasAttribute('data-olkt-nat')) box.setAttribute('data-olkt-nat', have);
-        if (have.toLowerCase() !== want.toLowerCase()) box.style.setProperty('--customColor', want);
-      } else if (box.hasAttribute('data-olkt-nat')) {
-        const nat = box.getAttribute('data-olkt-nat');
-        box.removeAttribute('data-olkt-nat');
-        if (nat) box.style.setProperty('--customColor', nat); else box.style.removeProperty('--customColor');
-      }
+      const name = any ? folderColors[colorKey(row)] : '';
+      if (name && FOLDER_COLORS.some(c => c[0] === name)) setAttr(box, 'data-olkt-color', name);
+      else if (box.hasAttribute('data-olkt-color')) box.removeAttribute('data-olkt-color');
     }
   }
   function setFolderColor(row, name) {
@@ -2097,11 +2104,8 @@ const runPage = (OLKT_CONFIG, carried, owedAnswers) => {
   let themeTimer = 0;
   const onThemeTick = () => { if (Object.keys(folderColors).length && isDarkTheme() !== colorsDark) ensureFolderColors(); };
   function restoreFolderColors() {
-    document.querySelectorAll('[data-olkt-nat]').forEach(box => {
-      const nat = box.getAttribute('data-olkt-nat');
-      box.removeAttribute('data-olkt-nat');
-      if (nat) box.style.setProperty('--customColor', nat); else box.style.removeProperty('--customColor');
-    });
+    document.querySelectorAll('[data-olkt-color]').forEach(box => box.removeAttribute('data-olkt-color'));
+    if (colorStyle) colorStyle.remove();
   }
 
   // Favorites that are in no group yet (all of them, on a new install) show at the

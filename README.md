@@ -27,8 +27,8 @@ colors, each drawn in its light or dark shade to match the theme (Automatic give
 Outlook's). The pane can be dragged wider, the account trees fold
 under one heading, and accounts reorder by dragging.
 
-![Shift+right-click a folder for Outlook's own folder colors; a shared mailbox's folders take
-them too](docs/folder-colors-dark.png)
+<p><img src="docs/folder-colors-dark.png" width="380" alt="The Color menu on a folder in the dark theme, with Outlook's 15 folder colors">
+<img src="docs/folder-colors-light.png" width="380" alt="The same menu in the light theme, each color in its light shade"></p>
 
 **Agenda.** Today and the next few days from every account's calendar sit at the bottom of the
 folder pane, each event in its calendar's color, with Outlook's own event icons, a marker on
